@@ -35,18 +35,26 @@ npx expo whoami
 
 ## 4. EAS 프로젝트 연결
 
-- [ ] EAS 프로젝트 초기화
+- [x] EAS 프로젝트 초기화
 
 ```bash
 npx eas init
 ```
 
+연결된 프로젝트:
+
+- Expo owner: `pant5uf1ard`
+- Project: `budget-calendar`
+- Project ID: `303cb010-2c33-4c73-8569-d256262ed8cc`
+
 ## 5. iOS 빌드 생성
+
+Apple Developer Portal에서 `Membership / Team ID`가 보인 뒤 진행합니다.
 
 처음에는 TestFlight용 production 빌드보다 내부 설치 확인용 preview 빌드가 편합니다.
 
 ```bash
-npx eas build --platform ios --profile preview
+npx eas build --platform ios --profile preview --clear-credentials
 ```
 
 진행 중 Apple 로그인, 팀 선택, 인증서/프로비저닝 생성 질문이 나오면 Expo가 안내하는 기본값으로 진행합니다.
@@ -67,6 +75,23 @@ npx eas submit --platform ios
 - [ ] 하루 이상 실제 지출 입력
 - [ ] 캘린더 재계산 확인
 - [ ] 키보드/모달/설정 화면 확인
+
+## 내일 이어가기 전 확인
+
+- [ ] https://developer.apple.com/account 에서 Team ID 보이는지 확인
+- [ ] https://appstoreconnect.apple.com 에서 약관 동의 남아있는지 확인
+- [ ] `npx eas build --platform ios --profile preview --clear-credentials` 재시도
+- [ ] Apple 로그인 후 팀 선택 화면이 뜨는지 확인
+
+## 오늘 완료한 사전 준비
+
+- [x] Expo/EAS 로그인 확인
+- [x] EAS 프로젝트 연결
+- [x] Bundle ID 설정
+- [x] 암호화 면제 응답 저장: `ITSAppUsesNonExemptEncryption: false`
+- [x] 임시 앱 아이콘 생성
+- [x] 임시 스플래시 이미지 생성
+- [x] Git 첫 커밋 생성
 
 ## 8. Android 병행 테스트
 
