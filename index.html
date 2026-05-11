@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Budget Calendar</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <p class="eyebrow">Monthly spending plan</p>
+        <h1>생활비 캘린더</h1>
+        <p class="lead">
+          수입에서 고정 지출과 목표 저축을 먼저 빼고, 남은 생활비를 날짜별로 다시 계산합니다.
+        </p>
+
+        <form id="budget-form" class="form">
+          <label>
+            <span>지금 있는 생활비 잔액</span>
+            <input id="current-balance" class="money-input" type="text" inputmode="numeric" value="300,000" />
+          </label>
+          <label>
+            <span>저축 목표 금액</span>
+            <input id="saving-goal" class="money-input" type="text" inputmode="numeric" value="700,000" />
+          </label>
+          <label>
+            <span>언제까지 저축할지</span>
+            <input id="saving-deadline" type="number" min="1" max="31" step="1" value="25" />
+          </label>
+          <label>
+            <span>주말 지출 배율</span>
+            <input id="weekend-multiplier" type="number" min="1" step="0.1" value="1.8" />
+          </label>
+          <input id="date" type="hidden" />
+          <div class="today-box">
+            <span>오늘 기준으로 자동 계산</span>
+            <strong id="today-label"></strong>
+          </div>
+        </form>
+
+        <section class="fixed-section">
+          <div class="section-row">
+            <div>
+              <p class="eyebrow">Income schedule</p>
+              <h2>돈 들어오는 날</h2>
+            </div>
+            <button id="add-income" type="button" class="secondary compact">추가</button>
+          </div>
+          <div id="income-list" class="fixed-list"></div>
+        </section>
+
+        <section class="fixed-section">
+          <div class="section-row">
+            <div>
+              <p class="eyebrow">Fixed expenses</p>
+              <h2>남은 고정 지출</h2>
+            </div>
+            <button id="add-fixed" type="button" class="secondary compact">추가</button>
+          </div>
+          <div id="fixed-list" class="fixed-list"></div>
+        </section>
+      </section>
+
+      <section class="workspace">
+        <section class="quick-card">
+          <div>
+            <p class="eyebrow">Today</p>
+            <h2>오늘 지출 빠른 입력</h2>
+          </div>
+          <form id="quick-expense-form" class="quick-form">
+            <input id="quick-amount" class="money-input" type="text" inputmode="numeric" placeholder="금액" />
+            <input id="quick-memo" type="text" placeholder="메모 예: 카페" />
+            <select id="quick-category">
+              <option>식비</option>
+              <option>카페</option>
+              <option>교통</option>
+              <option>술/약속</option>
+              <option>데이트</option>
+              <option>쇼핑</option>
+              <option>생활</option>
+              <option>기타</option>
+            </select>
+            <button type="submit" class="primary">추가</button>
+          </form>
+          <div id="today-expenses" class="today-expenses"></div>
+        </section>
+
+        <div id="summary" class="summary"></div>
+        <div class="calendar-head">
+          <div>
+            <p class="eyebrow">Rebalanced calendar</p>
+            <h2 id="month-title">이번 달</h2>
+          </div>
+          <p id="daily-note" class="daily-note"></p>
+        </div>
+        <div class="weekdays">
+          <span>월</span>
+          <span>화</span>
+          <span>수</span>
+          <span>목</span>
+          <span>금</span>
+          <span>토</span>
+          <span>일</span>
+        </div>
+        <div id="calendar" class="calendar"></div>
+      </section>
+    </main>
+
+    <dialog id="expense-dialog" class="dialog">
+      <div class="dialog-card">
+        <div>
+          <p class="eyebrow">Daily expenses</p>
+          <h2 id="dialog-title">지출 기록</h2>
+        </div>
+        <div id="daily-expense-list" class="expense-list"></div>
+        <form id="expense-form" class="dialog-form">
+          <input id="expense-amount" class="money-input" type="text" inputmode="numeric" placeholder="금액" />
+          <input id="expense-memo" type="text" placeholder="메모" />
+          <select id="expense-category">
+            <option>식비</option>
+            <option>카페</option>
+            <option>교통</option>
+            <option>술/약속</option>
+            <option>데이트</option>
+            <option>쇼핑</option>
+            <option>생활</option>
+            <option>기타</option>
+          </select>
+          <button type="submit" class="primary">추가</button>
+        </form>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" data-close>닫기</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

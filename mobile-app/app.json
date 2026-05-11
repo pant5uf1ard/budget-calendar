@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Budget Calendar",
+    "slug": "budget-calendar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.kmjunseong.budgetcalendar"
+    },
+    "android": {
+      "package": "com.kmjunseong.budgetcalendar",
+      "edgeToEdgeEnabled": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "303cb010-2c33-4c73-8569-d256262ed8cc"
+      }
+    },
+    "owner": "pant5uf1ard"
+  }
+}
