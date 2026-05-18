@@ -1,4 +1,4 @@
-# Budget Calendar Future Roadmap
+# 하루한도 Future Roadmap
 
 이 문서는 현재 MVP 이후에 검토할 기능과 수익화 아이디어를 정리한 체크리스트입니다.
 

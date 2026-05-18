@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>하루한도 v2 목업</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --surface: #ffffff;
+        --ink: #102033;
+        --muted: #617184;
+        --line: #dde3ea;
+        --teal: #0f766e;
+        --teal-soft: #e7f8f5;
+        --navy: #172554;
+        --amber: #b45309;
+        --amber-soft: #fff7ed;
+        --pink: #be185d;
+        --pink-soft: #fdf2f8;
+        --green: #15803d;
+        --green-soft: #f0fdf4;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+      }
+      .page {
+        width: min(1180px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+      .hero, .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+      }
+      .hero {
+        padding: 28px;
+        display: grid;
+        gap: 14px;
+      }
+      .eyebrow {
+        margin: 0;
+        color: var(--teal);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: .04em;
+      }
+      h1, h2, h3, p { margin: 0; }
+      h1 { font-size: 30px; }
+      h2 { font-size: 20px; }
+      h3 { font-size: 15px; }
+      .hero p, .muted { color: var(--muted); line-height: 1.65; }
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-top: 8px;
+      }
+      .flow div {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px;
+        background: #fafbfc;
+      }
+      .flow strong { display: block; margin-bottom: 6px; }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.05fr .95fr;
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .card { padding: 22px; }
+      .chat {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .bubble {
+        width: fit-content;
+        max-width: 85%;
+        padding: 12px 14px;
+        border-radius: 16px;
+        line-height: 1.5;
+      }
+      .bot { background: #eef2ff; }
+      .user { margin-left: auto; background: var(--teal-soft); }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px;
+      }
+      .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+      .metric strong { font-size: 22px; }
+      .envelopes {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .envelope {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+      }
+      .bar {
+        height: 8px;
+        margin-top: 10px;
+        background: #edf2f7;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .bar i { display: block; height: 100%; border-radius: inherit; }
+      .pink i { width: 37%; background: var(--pink); }
+      .amber i { width: 53%; background: var(--amber); }
+      .teal i { width: 41%; background: var(--teal); }
+      .green i { width: 22%; background: var(--green); }
+      .entry {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .pill {
+        border-radius: 999px;
+        padding: 8px 10px;
+        font-size: 13px;
+        font-weight: 700;
+        width: fit-content;
+      }
+      .pink-pill { background: var(--pink-soft); color: var(--pink); }
+      .amber-pill { background: var(--amber-soft); color: var(--amber); }
+      .green-pill { background: var(--green-soft); color: var(--green); }
+      .timeline {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 90px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .row:last-child { border-bottom: 0; padding-bottom: 0; }
+      .note {
+        margin-top: 16px;
+        border-radius: 16px;
+        background: #f8fafc;
+        padding: 16px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      @media (max-width: 900px) {
+        .flow, .grid, .summary, .entry { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">HARUHANDO V2</p>
+        <h1>처음엔 예산을 같이 짜고, 이후엔 봉투별로 지출을 관리하는 하루한도</h1>
+        <p>네 실제 흐름을 기준으로 만든 목업. 월급 70만 원은 10일, 용돈 65만 원은 25일에 들어오고, 앱은 생활 패턴을 물어본 뒤 월 예산과 오늘 한도를 함께 제안한다.</p>
+        <div class="flow">
+          <div><strong>1. 대화형 시작</strong><span class="muted">수입일, 연애, 식사 패턴, 저축 목표를 묻는다.</span></div>
+          <div><strong>2. 예산 제안</strong><span class="muted">생활에 맞는 봉투 예산을 자동으로 만든다.</span></div>
+          <div><strong>3. 지출 입력</strong><span class="muted">쓴 돈이 해당 봉투에서 바로 빠진다.</span></div>
+          <div><strong>4. 하루한도 재계산</strong><span class="muted">남은 기간 동안 쓸 수 있는 돈을 다시 나눈다.</span></div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <p class="eyebrow">ONBOARDING</p>
+          <h2>처음 대화</h2>
+          <div class="chat">
+            <div class="bubble bot">한 달에 돈은 언제 얼마씩 들어와요?</div>
+            <div class="bubble user">10일 월급 70만 원, 25일 용돈 65만 원.</div>
+            <div class="bubble bot">연애 중이면 보통 일주일에 몇 번 만나고, 밥값은 어떻게 내요?</div>
+            <div class="bubble user">주 4일 정도 붙어 있고, 밥값은 반반.</div>
+            <div class="bubble bot">혼자 먹는 저녁은 얼마나 돼요?</div>
+            <div class="bubble user">수·목·금 3번. 냉장고 작고 주방도 좁아.</div>
+            <div class="bubble bot">그럼 저축 45만 원을 지키는 현실 예산을 이렇게 제안할게요.</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <p class="eyebrow">MONTHLY PLAN</p>
+          <h2>앱이 제안한 이번 달 예산</h2>
+          <div class="summary">
+            <div class="metric"><span>월수입</span><strong>1,350,000원</strong></div>
+            <div class="metric"><span>저축 목표</span><strong>450,000원</strong></div>
+            <div class="metric"><span>10일 입금</span><strong>700,000원</strong></div>
+            <div class="metric"><span>25일 입금</span><strong>650,000원</strong></div>
+          </div>
+          <div class="envelopes">
+            <div class="envelope"><div><strong>혼자 저녁</strong><p class="muted">수·목·금 12끼</p><div class="bar teal"><i></i></div></div><strong>150,000</strong></div>
+            <div class="envelope"><div><strong>데이트 식사</strong><p class="muted">월 16회 만남 기준</p><div class="bar pink"><i></i></div></div><strong>250,000</strong></div>
+            <div class="envelope"><div><strong>데이트 놀거리</strong><p class="muted">PC방·보드게임·플스방·노래방</p><div class="bar amber"><i></i></div></div><strong>150,000</strong></div>
+            <div class="envelope"><div><strong>교통</strong><p class="muted">이동비</p><div class="bar green"><i></i></div></div><strong>100,000</strong></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <p class="eyebrow">TODAY</p>
+          <h2>지출 입력</h2>
+          <div class="entry">
+            <div class="metric"><span>오늘 사용</span><strong>18,000원</strong><p class="muted">피시방</p></div>
+            <div class="metric"><span>빠진 봉투</span><strong>데이트 놀거리</strong><p class="muted">150,000 → 132,000원</p></div>
+          </div>
+          <div class="entry">
+            <div class="metric"><span>오늘 한도</span><strong>31,400원</strong></div>
+            <div class="metric"><span>오늘 남은 돈</span><strong>13,400원</strong></div>
+          </div>
+          <p class="note">앱은 “무엇에 썼는지”와 “오늘부터 얼마씩 써야 하는지”를 동시에 본다. 봉투가 과하게 줄면 다음 지출 입력 때 경고를 띄운다.</p>
+        </article>
+
+        <article class="card">
+          <p class="eyebrow">WEEKLY RHYTHM</p>
+          <h2>이번 달 운영 감각</h2>
+          <div class="timeline">
+            <div class="row"><strong>10일</strong><span>월급 입금</span><b>+700,000</b></div>
+            <div class="row"><strong>10일</strong><span>저축 자동이체</span><b>-250,000</b></div>
+            <div class="row"><strong>25일</strong><span>용돈 입금</span><b>+650,000</b></div>
+            <div class="row"><strong>25일</strong><span>저축 자동이체</span><b>-200,000</b></div>
+          </div>
+          <p class="note">하루한도는 시간축을, 봉투예산은 용도축을 맡는다. 그래서 “데이트비는 빠르게 줄지만 혼밥비는 남아 있다” 같은 생활의 진짜 모양을 보여줄 수 있다.</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

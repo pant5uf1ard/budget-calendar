@@ -1,6 +1,6 @@
 # TestFlight Setup Checklist
 
-Budget Calendar를 Expo Go 없이 iPhone에 설치해서 실생활 테스트하기 위한 순서입니다.
+하루한도를 Expo Go 없이 iPhone에 설치해서 실생활 테스트하기 위한 순서입니다.
 
 ## 1. Apple Developer 확인
 
@@ -71,10 +71,14 @@ npx eas submit --platform ios
 ## 7. iPhone 테스트
 
 - [ ] TestFlight 앱 설치
-- [ ] Budget Calendar 초대/테스트 빌드 설치
+- [ ] 하루한도 초대/테스트 빌드 설치
 - [ ] 하루 이상 실제 지출 입력
 - [ ] 캘린더 재계산 확인
 - [ ] 키보드/모달/설정 화면 확인
+- [ ] 첫 실행 초기 설정에서 예시값 없이 입력되는지 확인
+- [ ] 계산 근거 카드가 실제 입력값과 맞는지 확인
+- [ ] 캘린더 범례와 오늘 표시가 헷갈리지 않는지 확인
+- [ ] 고정 지출/수입이 없을 때 빈 상태 문구 확인
 
 ## 내일 이어가기 전 확인
 
@@ -102,3 +106,15 @@ npx eas build --platform android --profile preview
 ```
 
 생성된 APK를 Android 폰에 설치해서 Expo Go 없이 테스트합니다.
+
+## 9. App Store 공개 출시 전
+
+- [x] 앱 이름 확정: 하루한도
+- [ ] 앱 아이콘 최종본 확정
+- [ ] App Store 스크린샷 준비
+- [x] 앱 설명/키워드 초안 작성: `APP_STORE_ASSETS.md`
+- [ ] 개인정보 처리방침 URL 준비: `privacy.html` 배포 필요
+- [ ] 지원 URL 준비
+- [ ] 문의 이메일 확정
+- [ ] 개인정보 수집 항목: 현재는 기기 내 저장만 사용한다고 표기
+- [ ] 광고/분석/계좌 연동이 없음을 심사 정보와 일치시키기
