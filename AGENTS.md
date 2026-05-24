@@ -1,78 +1,84 @@
 # Agent Project Instructions
 
-이 문서는 Codex와 기타 코딩 에이전트가 이 프로젝트에서 따라야 할 기본 작업 규칙이다. 더 구체적인 하위 디렉터리 지침이 있으면 그 지침을 우선한다.
+Base work rules for Codex + other coding agents in project. Subdir-specific rules win.
 
 ## 1. Core Posture
 
-- 먼저 이해하고, 그다음 고친다.
-- 모호한 요구사항은 조용히 추측하지 말고 가정과 선택지를 드러낸다.
-- 사소한 작업은 빠르게 처리하되, 코드 수정은 계획, 실행, 검증의 루프를 따른다.
-- 사용자가 요청하지 않은 기능, 추상화, 리팩터링은 추가하지 않는다.
+- Understand first, fix second.
+- Vague reqs: surface assumptions + options, no silent guessing.
+- Trivial tasks fast. Code changes: plan→execute→verify loop.
+- No unrequested features, abstractions, refactors.
 
 ## 2. Context Management
 
-- 파일을 무작정 읽기 전에 `rg --files`, `rg`, `ls` 등으로 구조와 관련 파일을 좁힌다.
-- 관련성이 높은 파일만 읽는다. 대용량 로그, 빌드 산출물, `node_modules`, 생성 파일은 필요할 때만 본다.
-- 긴 작업에서는 현재까지의 변경, 검증, 남은 일을 짧게 요약해 맥락을 유지한다.
+- Before reading files: narrow with `rg --files`, `rg`, `ls`.
+- Read only relevant files. Big logs, build artifacts, `node_modules`, generated files: only when needed.
+- Long tasks: summarize changes/verified/remaining briefly to keep context.
 
 ## 3. Plan, Execute, Verify
 
 ### Plan
 
-- 수정 전에 예상 변경 파일, 영향 범위, 검증 방법을 잡는다.
-- 합리적인 가정으로 진행할 수 있으면 진행하고, 위험한 추측이 필요하면 질문한다.
-- 선택지가 여러 개면 장단점을 짧게 말하고 가장 단순한 방향을 우선한다.
+- Pre-edit: list expected files, blast radius, verification method.
+- Proceed on reasonable assumption. Risky guess → ask.
+- Multiple options → short tradeoffs, prefer simplest.
 
 ### Execute
 
-- 기존 프로젝트의 패턴, 네이밍, 스타일을 우선한다.
-- 한 번에 너무 많은 파일을 건드리지 말고 요청과 직접 관련된 부분만 수정한다.
-- 단일 용도 코드에 새 추상화를 만들지 않는다.
-- "나중에 필요할 수도 있는" 설정, 확장성, 기능은 추가하지 않는다.
-- 200줄로 쓴 코드가 50줄로 가능하면 다시 단순화한다.
+- Match existing patterns, naming, style.
+- Don't touch many files at once. Edit only what request needs.
+- No new abstractions for single-use code.
+- No "might need later" config/extensibility/features.
+- 200 lines → if 50 works, redo simpler.
 
 ### Verify
 
-- 가능한 한 가장 가까운 검증을 실행한다: 타입체크, 린트, 테스트, 빌드, 또는 실제 앱 동작 확인.
-- 버그 수정은 가능하면 재현 조건을 먼저 확인하고, 수정 후 같은 경로로 다시 확인한다.
-- 검증을 못 했으면 이유와 남은 리스크를 명확히 말한다.
+- Run closest check available: typecheck, lint, test, build, or real app.
+- Bug fix: confirm repro first, re-check same path after fix.
+- Couldn't verify? State reason + remaining risk.
 
 ## 4. Surgical Change Rules
 
-- 모든 변경 라인은 사용자 요청과 직접 연결되어야 한다.
-- 인접 코드, 주석, 포맷을 "겸사겸사" 개선하지 않는다.
-- 깨지지 않은 구조를 리팩터링하지 않는다.
-- 내 변경으로 생긴 unused import, 변수, 함수는 정리한다.
-- 기존에 있던 죽은 코드나 별도 문제는 삭제하지 말고 필요하면 언급만 한다.
-- 더 단순한 방법이 보이면 그 방향을 우선하고, 과한 구현은 스스로 줄인다.
+- Every changed line ties direct to request.
+- Edit only user-specified copy/behavior/UI. No bonus copy changes, UX tweaks "to look better."
+- No drive-by improvements to adjacent code, comments, format.
+- Don't refactor unbroken structure.
+- Clean up unused imports/vars/funcs YOU created.
+- Pre-existing dead code or unrelated issues: mention, don't delete.
+- See simpler path → take it. Trim own over-engineering.
 
 ## 5. Communication
 
-- 작업 중에는 무엇을 확인하고 있는지, 무엇을 고칠지 짧게 공유한다.
-- 에러가 나면 원인 추정과 다음 선택지를 함께 말한다.
-- 최종 답변은 변경 내용과 검증 결과 중심으로 간결하게 정리한다.
-- 커밋 메시지는 파일명이 아니라 변경의 이유와 결과를 설명한다.
+- During work: brief share of what checking, what fixing.
+- Errors: cause guess + next options together.
+- Final answer: terse, change + verify focused.
+- Commit msg: why + result, not filenames.
 
 ## 6. Safety
 
-- `.env`, credentials, 토큰, 키체인, 개인정보는 출력하거나 임의 수정하지 않는다.
-- `rm -rf`, `git reset --hard`, 강제 checkout, force push 같은 파괴적 명령은 명시적 확인 없이는 실행하지 않는다.
-- dirty worktree에서는 사용자 변경을 되돌리거나 덮어쓰지 않는다.
-- 외부 정책, 법률, 금융, 의료, 보안처럼 최신성과 정확도가 중요한 내용은 확인 가능한 근거를 우선한다.
+- `.env`, credentials, tokens, keychain, PII: no output, no arbitrary edit.
+- `rm -rf`, `git reset --hard`, force checkout, force push: explicit confirm required.
+- Dirty worktree: no revert/overwrite of user changes.
+- External policy/legal/finance/medical/security: prefer verifiable sources (freshness + accuracy matter).
 
 ## 7. Workflow Routing
 
-- 제품 아이디어나 요구사항이 흐릿하면 먼저 문제, 사용자, 성공 기준을 정리한다.
-- 버그는 바로 고치기 전에 재현 경로와 의심 범위를 좁힌다.
-- UI 작업은 실제 화면에서 레이아웃, 반응형, 텍스트 넘침, 상호작용을 확인한다.
-- 보안이나 개인정보가 관련되면 데이터 흐름, 권한, 저장 위치, 외부 전송 여부를 먼저 확인한다.
-- 배포 전에는 변경 범위에 맞는 빌드, 테스트, 린트, 또는 수동 QA 결과를 남긴다.
+- Fuzzy product idea/req → first nail problem, user, success criteria.
+- Bug → narrow repro path + suspect range before fix.
+- UI work → check real screen: layout, responsive, text overflow, interaction.
+- Security/PII involved → trace data flow, perms, storage, external transmission first.
+- Pre-deploy: leave build/test/lint or manual QA results matching scope.
 
 ## 8. Input UX Rules
 
-- 새 입력 UI를 만들 때는 기존 입력 패턴을 먼저 재사용한다. 비슷한 필드가 이미 있으면 같은 동작을 유지한다.
-- 수입/고정지출/봉투 이름처럼 즉시 덮어쓰는 편이 자연스러운 이름 필드는 빈칸으로 추가하고 `selectTextOnFocus`를 유지한다.
-- 날짜 입력은 포커스 시 기존 숫자를 비우고, 아무것도 입력하지 않은 채 빠져나오면 직전 유효값으로 복구한다.
-- 금액 입력은 사용 중 쉼표 포맷을 유지해 읽기 쉽게 만든다.
-- 초기 설정의 반복 입력 행은 필요한 경우 `용도 / 날짜 (일) / 금액`처럼 짧은 라벨을 함께 보여준다.
-- 키보드 주변 보조 UI를 추가할 때는 기존 홈/캘린더 입력 흐름을 깨지 않는지 먼저 확인한다.
+- New input UI: reuse existing input patterns first. Similar field exists → keep same behavior.
+- Name fields where instant overwrite natural (수입/고정지출/봉투): start blank + keep `selectTextOnFocus`.
+- Date input: clear digits on focus; bail empty → restore last valid value.
+- Amount input: keep comma format mid-typing for readability.
+- Initial setup repeat rows: show short labels like `용도 / 날짜 (일) / 금액` when useful.
+- Adding keyboard-area helper UI: verify home/calendar input flow not broken first.
+- React Native iOS focus → keyboard up: don't over-shift whole screen, lift only enough to uncover input.
+- Onboarding-style scroll screens with bottom `다음` button: `KeyboardAvoidingView` `padding` mode can leave empty gap above keyboard + hide button. Use `behavior="height"` + `keyboardVerticalOffset` near 0.
+- Don't collapse/remove bottom button area to `height: 0` on keyboard show. Layout center recalc → screen jumps. Tweak scroll container `paddingBottom` small if needed.
+- iOS keyboard tracking: prefer `keyboardWillShow`/`keyboardWillHide` so layout settles pre-animation. Android: `keyboardDidShow`/`keyboardDidHide`.
+- App → home/background can drop keyboard hide event. On `AppState` inactive: call `Keyboard.dismiss()` + reset keyboard-shown flag to false. Prevents return-state where input focused but no keypad.

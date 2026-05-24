@@ -1,30 +1,47 @@
 import { StatusBar } from 'expo-status-bar'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
+  AppState,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native'
 
-type Tab = 'home' | 'calendar' | 'settings'
+type Tab = 'home' | 'calendar' | 'envelopes' | 'settings'
 type Category = '식비' | '생활' | '교통' | '쇼핑' | '문화' | '기타'
 type LifestyleType = 'balanced' | 'worker' | 'weekendSocial' | 'weekendHeavy' | 'weekdayOnly'
+type HousingType = 'solo' | 'family' | 'share'
+type BudgetCoachProfile = {
+  lunch: 'provided' | 'lunchbox' | 'buy' | 'delivery'
+  dinner: 'home' | 'mixed' | 'buy'
+  socialFrequency: number
+  socialPerVisit: number
+  shoppingMonthly: number
+  contentMonthly: number
+  moneyStyle: 'tight' | 'balanced' | 'loose'
+}
+type Cadence = 'monthly' | 'biweekly' | 'weekly' | 'irregular'
+type IncomeSetupMode = 'regular' | 'irregular' | 'none'
 
 type IncomeItem = {
   id: string
   name: string
-  day: number
-  amount: number
+  amount: number | null
+  cadence: Cadence
+  anchorDate: string
+  estIntervalDays?: number
 }
 
 type FixedItem = {
@@ -40,35 +57,62 @@ type ExpenseRecord = {
   amount: number
   memo: string
   category: Category
-  envelopeId: string
   createdAt: string
 }
 
 type BudgetEnvelope = {
   id: string
-  name: string
-  monthlyLimit: number
-  spent: number
+  name: Category
+  periodLimit: number
+}
+
+type EnvelopeTransfer = {
+  from: Category
+  to: Category
+  amount: number
+  at: string
+}
+
+type PeriodSnapshot = {
+  id: string
+  startDate: string
+  endDate: string
+  startingBalance: number
+  confirmedIncome: number
+  envelopePlan: { category: Category; limit: number }[]
+  transfers: EnvelopeTransfer[]
+  actualByCategory: { category: Category; amount: number }[]
 }
 
 type BudgetState = {
   setupComplete: boolean
   currentBalance: number
+  savingEnabled: boolean
   savingGoal: number
   savingDeadline: number
   lifestyleType: LifestyleType
   weekendMultiplier?: number
   incomes: IncomeItem[]
+  noIncomeMode: 'targetDate' | 'openEnded'
+  targetDate?: string
   fixedItems: FixedItem[]
   envelopes: BudgetEnvelope[]
   expenses: ExpenseRecord[]
+  currentPeriodStart: string
+  currentPeriodStartingBalance: number
+  currentPeriodPlan: { category: Category; limit: number }[]
+  currentTransfers: EnvelopeTransfer[]
+  periods: PeriodSnapshot[]
+  coachProfile: BudgetCoachProfile
+  datePoolMonthly: number
+  eventReserveMonthly: number
+  housing: HousingType
   dailyNotes: Record<string, string>
   noSpendDates: string[]
 }
 
 const STORAGE_KEY = 'budget-calendar-mobile-v1'
 const CATEGORIES: Category[] = ['식비', '생활', '교통', '쇼핑', '문화', '기타']
-const DEFAULT_ENVELOPE_NAMES = ['식비', '교통', '개인소비', '예비비']
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
 const LIFESTYLE_OPTIONS: { key: LifestyleType; title: string; description: string; weekdayWeight: number; weekendWeight: number }[] = [
   { key: 'balanced', title: '균등형', description: '요일 상관없이 비슷하게 써요', weekdayWeight: 1, weekendWeight: 1 },
@@ -77,17 +121,75 @@ const LIFESTYLE_OPTIONS: { key: LifestyleType; title: string; description: strin
   { key: 'weekendHeavy', title: '주말 몰빵형', description: '평일은 거의 안 쓰고, 주말에 크게 써요', weekdayWeight: 0.45, weekendWeight: 2.8 },
   { key: 'weekdayOnly', title: '주말 제외형', description: '주말 예산은 따로 잡지 않고 평일에만 나눠요', weekdayWeight: 1, weekendWeight: 0 },
 ]
+const CADENCE_OPTIONS: { key: Cadence; label: string }[] = [
+  { key: 'monthly', label: '매달' },
+  { key: 'biweekly', label: '격주' },
+  { key: 'weekly', label: '매주' },
+  { key: 'irregular', label: '들쭉날쭉' },
+]
+export const initialCoachProfile: BudgetCoachProfile = {
+  lunch: 'buy',
+  dinner: 'mixed',
+  socialFrequency: 5,
+  socialPerVisit: 25000,
+  shoppingMonthly: 100000,
+  contentMonthly: 30000,
+  moneyStyle: 'balanced',
+}
+
+type SetupStep =
+  | { kind: 'balance' }
+  | { kind: 'incomeMode' }
+  | { kind: 'incomeDetail' }
+  | { kind: 'fixed' }
+  | { kind: 'autoDeduct' }
+  | { kind: 'lifestyle' }
+  | { kind: 'coachMeal' }
+  | { kind: 'coachSocial' }
+  | { kind: 'coachShopping' }
+  | { kind: 'coachContent' }
+  | { kind: 'coachStyle' }
+  | { kind: 'saving' }
+  | { kind: 'result' }
+
+const SETUP_STEPS: SetupStep[] = [
+  { kind: 'balance' },
+  { kind: 'incomeMode' },
+  { kind: 'incomeDetail' },
+  { kind: 'fixed' },
+  { kind: 'autoDeduct' },
+  { kind: 'lifestyle' },
+  { kind: 'coachMeal' },
+  { kind: 'coachSocial' },
+  { kind: 'coachShopping' },
+  { kind: 'coachContent' },
+  { kind: 'coachStyle' },
+  { kind: 'saving' },
+  { kind: 'result' },
+]
+const TOTAL_SETUP_STEPS = SETUP_STEPS.length
 
 const initialState: BudgetState = {
   setupComplete: false,
   currentBalance: 0,
+  savingEnabled: false,
   savingGoal: 0,
   savingDeadline: 25,
   lifestyleType: 'worker',
   incomes: [],
+  noIncomeMode: 'openEnded',
   fixedItems: [],
   envelopes: makeDefaultEnvelopes(),
   expenses: [],
+  currentPeriodStart: isoDate(new Date()),
+  currentPeriodStartingBalance: 0,
+  currentPeriodPlan: makeDefaultEnvelopes().map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+  currentTransfers: [],
+  periods: [],
+  coachProfile: initialCoachProfile,
+  datePoolMonthly: 0,
+  eventReserveMonthly: 40000,
+  housing: 'solo',
   dailyNotes: {},
   noSpendDates: [],
 }
@@ -154,6 +256,11 @@ function sanitizeAmount(value: unknown) {
   return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0
 }
 
+function sanitizeFinite(value: unknown) {
+  const amount = Number(value)
+  return Number.isFinite(amount) ? Math.round(amount) : 0
+}
+
 function sanitizeText(value: unknown, fallback: string) {
   const text = typeof value === 'string' ? value.trim() : ''
   return text || fallback
@@ -163,13 +270,57 @@ function isIsoDateKey(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
 
-function sanitizeIncomeItem(item: Partial<IncomeItem>, index: number): IncomeItem {
+function isValidCadence(value: unknown): value is Cadence {
+  return value === 'monthly' || value === 'biweekly' || value === 'weekly' || value === 'irregular'
+}
+
+function isNoIncomeMode(value: unknown): value is BudgetState['noIncomeMode'] {
+  return value === 'targetDate' || value === 'openEnded'
+}
+
+function isHousingType(value: unknown): value is HousingType {
+  return value === 'solo' || value === 'family' || value === 'share'
+}
+
+export function parseIso(key: string): Date {
+  const [year, month, day] = key.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
+export function daysBetween(a: Date, b: Date): number {
+  const start = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime()
+  const end = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime()
+  return Math.round((end - start) / 86400000)
+}
+
+export function clampDayToMonth(year: number, monthIndex: number, day: number): Date {
+  return new Date(year, monthIndex, Math.min(clampDay(day), daysInMonth(new Date(year, monthIndex, 1))))
+}
+
+function sanitizeIncomeItem(item: Partial<IncomeItem> & { day?: unknown }, index: number): IncomeItem {
+  const today = new Date()
+  const legacyDay = clampDay(Number(item.day) || 25)
+  const anchorDate = isIsoDateKey(item.anchorDate)
+    ? item.anchorDate
+    : isoDate(clampDayToMonth(today.getFullYear(), today.getMonth(), legacyDay))
+  const amount = item.amount === null ? null : sanitizeAmount(item.amount)
+  const estIntervalDays = sanitizeAmount(item.estIntervalDays)
   return {
     id: sanitizeText(item.id, `income-${index + 1}`),
     name: sanitizeText(item.name, `수입 ${index + 1}`),
-    day: clampDay(Number(item.day) || 25),
-    amount: sanitizeAmount(item.amount),
+    amount,
+    cadence: isValidCadence(item.cadence) ? item.cadence : 'monthly',
+    anchorDate,
+    ...(estIntervalDays > 0 ? { estIntervalDays } : {}),
   }
+}
+
+function sortByDayThenName<T extends { day: number; name: string; id: string }>(items: T[]) {
+  return [...items].sort((a, b) => a.day - b.day || a.name.localeCompare(b.name, 'ko-KR') || a.id.localeCompare(b.id))
+}
+
+function sortIncomes(items: IncomeItem[]) {
+  return [...items].sort((a, b) => a.anchorDate.localeCompare(b.anchorDate) || a.name.localeCompare(b.name, 'ko-KR') || a.id.localeCompare(b.id))
 }
 
 function sanitizeFixedItem(item: Partial<FixedItem>, index: number): FixedItem {
@@ -191,27 +342,37 @@ function sanitizeExpenseRecord(item: Partial<ExpenseRecord>, index: number): Exp
     amount,
     memo: typeof item.memo === 'string' ? item.memo : '',
     category: normalizeCategory(item.category),
-    envelopeId: sanitizeText(item.envelopeId, ''),
     createdAt: typeof item.createdAt === 'string' && item.createdAt ? item.createdAt : new Date().toISOString(),
   }
 }
 
 function makeDefaultEnvelopes(): BudgetEnvelope[] {
-  return DEFAULT_ENVELOPE_NAMES.map((name, index) => ({
-    id: `envelope-${index + 1}`,
+  return CATEGORIES.map(name => ({
+    id: name,
     name,
-    monthlyLimit: 0,
-    spent: 0,
+    periodLimit: 0,
   }))
 }
 
-function sanitizeEnvelope(item: Partial<BudgetEnvelope>, index: number): BudgetEnvelope {
-  return {
-    id: sanitizeText(item.id, `envelope-${index + 1}`),
-    name: sanitizeText(item.name, DEFAULT_ENVELOPE_NAMES[index] ?? `봉투 ${index + 1}`),
-    monthlyLimit: sanitizeAmount(item.monthlyLimit),
-    spent: sanitizeAmount(item.spent),
-  }
+function normalizeEnvelopes(value: unknown): BudgetEnvelope[] {
+  const saved = Array.isArray(value) ? value as (Partial<BudgetEnvelope> & { monthlyLimit?: unknown })[] : []
+  const byCategory = new Map<Category, number>(CATEGORIES.map(category => [category, 0]))
+  saved.forEach(item => {
+    const limit = sanitizeAmount(item.periodLimit ?? item.monthlyLimit)
+    const name = typeof item.name === 'string' ? item.name.trim() : ''
+    if (CATEGORIES.includes(name as Category)) {
+      byCategory.set(name as Category, (byCategory.get(name as Category) ?? 0) + limit)
+    } else if (name === '개인소비') {
+      byCategory.set('문화', (byCategory.get('문화') ?? 0) + limit)
+    } else if (name !== '예비비') {
+      byCategory.set('기타', (byCategory.get('기타') ?? 0) + limit)
+    }
+  })
+  return CATEGORIES.map(category => ({
+    id: category,
+    name: category,
+    periodLimit: byCategory.get(category) ?? 0,
+  }))
 }
 
 function sanitizeDailyNotes(value: unknown) {
@@ -223,39 +384,186 @@ function sanitizeDailyNotes(value: unknown) {
   ) as Record<string, string>
 }
 
-function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
+function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return initialCoachProfile
+  const saved = value as Record<string, unknown>
+  const hasOldKeys = 'soloDinner' in saved
+    || 'socialCount' in saved
+    || 'personalSpend' in saved
+    || 'kitchen' in saved
+    || 'split' in saved
+    || 'style' in saved
+  const hasNewKeys = !hasOldKeys && (typeof saved.lunch === 'string'
+    || typeof saved.dinner === 'string'
+    || typeof saved.socialFrequency === 'number'
+    || typeof saved.socialPerVisit === 'number'
+    || typeof saved.shoppingMonthly === 'number'
+    || typeof saved.contentMonthly === 'number')
+
+  if (!hasNewKeys) {
+    return {
+      lunch: saved.lunch === 'provided'
+        ? 'provided'
+        : saved.lunch === 'home'
+          ? 'lunchbox'
+          : saved.lunch === 'buy'
+            ? 'buy'
+            : 'buy',
+      dinner: saved.leak === 'delivery'
+        ? 'buy'
+        : saved.kitchen === 'small' || saved.kitchen === 'hard'
+          ? 'buy'
+          : saved.soloDinner === 'rare'
+            ? 'home'
+            : saved.soloDinner === 'fourPlus'
+              ? 'mixed'
+              : 'mixed',
+      socialFrequency: saved.socialCount === 'rare'
+        ? 2
+        : saved.socialCount === 'twoThree'
+          ? 5
+          : saved.socialCount === 'fourPlus'
+            ? 10
+            : 5,
+      socialPerVisit: saved.split === 'mostlyMe' ? 35000 : 25000,
+      shoppingMonthly: saved.personalSpend === 'under10'
+        ? 50000
+        : saved.personalSpend === 'tenTwenty'
+          ? 150000
+          : saved.personalSpend === 'twentyThirty'
+            ? 250000
+            : saved.personalSpend === 'overThirty'
+              ? 350000
+              : 100000,
+      contentMonthly: saved.leak === 'hobby' ? 50000 : saved.leak === 'snack' ? 20000 : 30000,
+      moneyStyle: saved.style === 'strict'
+        ? 'tight'
+        : saved.style === 'safe'
+          ? 'loose'
+          : saved.style === 'balanced'
+            ? 'balanced'
+            : 'balanced',
+    }
+  }
+
+  return {
+    lunch: saved.lunch === 'provided' || saved.lunch === 'lunchbox' || saved.lunch === 'buy' || saved.lunch === 'delivery'
+      ? saved.lunch
+      : initialCoachProfile.lunch,
+    dinner: saved.dinner === 'home' || saved.dinner === 'mixed' || saved.dinner === 'buy'
+      ? saved.dinner
+      : initialCoachProfile.dinner,
+    socialFrequency: Math.min(30, Math.max(0, sanitizeFinite(saved.socialFrequency))),
+    socialPerVisit: sanitizeAmount(saved.socialPerVisit) || initialCoachProfile.socialPerVisit,
+    shoppingMonthly: sanitizeAmount(saved.shoppingMonthly) || initialCoachProfile.shoppingMonthly,
+    contentMonthly: sanitizeAmount(saved.contentMonthly) || initialCoachProfile.contentMonthly,
+    moneyStyle: saved.moneyStyle === 'tight' || saved.moneyStyle === 'balanced' || saved.moneyStyle === 'loose'
+      ? saved.moneyStyle
+      : initialCoachProfile.moneyStyle,
+  }
+}
+
+function sanitizeEnvelopePlan(value: unknown, envelopes: BudgetEnvelope[]) {
+  if (!Array.isArray(value)) {
+    return envelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit }))
+  }
+  const plan = value
+    .map(item => {
+      if (!item || typeof item !== 'object') return null
+      const row = item as { category?: unknown; limit?: unknown }
+      const category = normalizeCategory(row.category)
+      return { category, limit: sanitizeAmount(row.limit) }
+    })
+    .filter((item): item is { category: Category; limit: number } => Boolean(item))
+  return plan.length > 0 ? plan : envelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit }))
+}
+
+function sanitizeTransfers(value: unknown): EnvelopeTransfer[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(item => {
+      if (!item || typeof item !== 'object') return null
+      const row = item as Partial<EnvelopeTransfer>
+      const amount = sanitizeAmount(row.amount)
+      if (!amount) return null
+      return {
+        from: normalizeCategory(row.from),
+        to: normalizeCategory(row.to),
+        amount,
+        at: typeof row.at === 'string' && row.at ? row.at : new Date().toISOString(),
+      }
+    })
+    .filter((item): item is EnvelopeTransfer => Boolean(item))
+}
+
+function sanitizePeriods(value: unknown): PeriodSnapshot[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null
+      const row = item as Partial<PeriodSnapshot>
+      if (!isIsoDateKey(row.startDate) || !isIsoDateKey(row.endDate)) return null
+      return {
+        id: sanitizeText(row.id, `period-${index + 1}`),
+        startDate: row.startDate,
+        endDate: row.endDate,
+        startingBalance: sanitizeAmount(row.startingBalance),
+        confirmedIncome: sanitizeFinite(row.confirmedIncome),
+        envelopePlan: sanitizeEnvelopePlan(row.envelopePlan, makeDefaultEnvelopes()),
+        transfers: sanitizeTransfers(row.transfers),
+        actualByCategory: sanitizeEnvelopePlan(row.actualByCategory, makeDefaultEnvelopes()).map(item => ({
+          category: item.category,
+          amount: item.limit,
+        })),
+      }
+    })
+    .filter((item): item is PeriodSnapshot => Boolean(item))
+}
+
+export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
   const incomes = Array.isArray(saved.incomes)
-    ? saved.incomes.map(sanitizeIncomeItem).filter(item => item.amount > 0)
+    ? sortIncomes(saved.incomes.map(sanitizeIncomeItem).filter(item => isIsoDateKey(item.anchorDate)))
     : []
   const fixedItems = Array.isArray(saved.fixedItems)
-    ? saved.fixedItems.map(sanitizeFixedItem).filter(item => item.amount > 0)
+    ? sortByDayThenName(saved.fixedItems.map(sanitizeFixedItem).filter(item => item.amount > 0))
     : []
   const expenses = Array.isArray(saved.expenses)
     ? saved.expenses.map(sanitizeExpenseRecord).filter((item): item is ExpenseRecord => Boolean(item))
     : []
-  const envelopes = Array.isArray(saved.envelopes) && saved.envelopes.length > 0
-    ? saved.envelopes.map(sanitizeEnvelope)
-    : makeDefaultEnvelopes()
-  const fallbackEnvelopeId = envelopes[0]?.id ?? ''
-  const migratedExpenses = expenses.map(item => ({
-    ...item,
-    envelopeId: item.envelopeId || fallbackEnvelopeId,
-  }))
+  const envelopes = normalizeEnvelopes(saved.envelopes)
+  const currentBalance = sanitizeAmount(saved.currentBalance)
+  const currentPeriodPlan = sanitizeEnvelopePlan(saved.currentPeriodPlan, envelopes)
 
   return {
     ...initialState,
     ...saved,
     setupComplete: Boolean(saved.setupComplete),
-    currentBalance: sanitizeAmount(saved.currentBalance),
+    currentBalance,
+    savingEnabled: saved.savingEnabled === undefined
+      ? sanitizeAmount(saved.savingGoal) > 0
+      : Boolean(saved.savingEnabled),
     savingGoal: sanitizeAmount(saved.savingGoal),
     savingDeadline: clampDay(Number(saved.savingDeadline) || initialState.savingDeadline),
     lifestyleType: LIFESTYLE_OPTIONS.some(option => option.key === saved.lifestyleType)
       ? saved.lifestyleType as LifestyleType
       : initialState.lifestyleType,
     incomes,
+    noIncomeMode: isNoIncomeMode(saved.noIncomeMode) ? saved.noIncomeMode : 'openEnded',
+    targetDate: isIsoDateKey(saved.targetDate) ? saved.targetDate : undefined,
     fixedItems,
     envelopes,
-    expenses: migratedExpenses,
+    expenses,
+    currentPeriodStart: isIsoDateKey(saved.currentPeriodStart) ? saved.currentPeriodStart : isoDate(new Date()),
+    currentPeriodStartingBalance: Number.isFinite(Number(saved.currentPeriodStartingBalance))
+      ? sanitizeFinite(saved.currentPeriodStartingBalance)
+      : currentBalance,
+    currentPeriodPlan,
+    currentTransfers: sanitizeTransfers(saved.currentTransfers),
+    periods: sanitizePeriods(saved.periods),
+    coachProfile: sanitizeCoachProfile(saved.coachProfile),
+    datePoolMonthly: sanitizeAmount(saved.datePoolMonthly),
+    eventReserveMonthly: saved.eventReserveMonthly === undefined ? 40000 : sanitizeAmount(saved.eventReserveMonthly),
+    housing: isHousingType(saved.housing) ? saved.housing : 'solo',
     dailyNotes: sanitizeDailyNotes(saved.dailyNotes),
     noSpendDates: Array.isArray(saved.noSpendDates) ? saved.noSpendDates.filter(isIsoDateKey) : [],
   }
@@ -274,6 +582,38 @@ function daysInMonth(date: Date) {
 
 function dateForDay(date: Date, day: number) {
   return isoDate(new Date(date.getFullYear(), date.getMonth(), day))
+}
+
+function incomeDay(item: IncomeItem) {
+  return clampDay(parseIso(item.anchorDate).getDate())
+}
+
+function incomeWithDay(item: IncomeItem, day: number, baseDate = new Date()): IncomeItem {
+  return {
+    ...item,
+    anchorDate: isoDate(clampDayToMonth(baseDate.getFullYear(), baseDate.getMonth(), day)),
+  }
+}
+
+function incomeWithCadence(item: IncomeItem, cadence: Cadence): IncomeItem {
+  return {
+    ...item,
+    cadence,
+    anchorDate: cadence === 'monthly'
+      ? isoDate(clampDayToMonth(parseIso(item.anchorDate).getFullYear(), parseIso(item.anchorDate).getMonth(), incomeDay(item)))
+      : item.anchorDate,
+  }
+}
+
+function incomePlanningAmount(item: IncomeItem) {
+  return item.amount ?? 0
+}
+
+function monthlyIncomeAmount(item: IncomeItem) {
+  const amount = incomePlanningAmount(item)
+  if (item.cadence === 'biweekly') return amount * 26 / 12
+  if (item.cadence === 'weekly') return amount * 52 / 12
+  return amount
 }
 
 function startOfMonth(date: Date) {
@@ -307,10 +647,6 @@ function isBeforeOrSameDate(a: Date, b: Date) {
   return isoDate(a) <= isoDate(b)
 }
 
-function sameMonth(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
-}
-
 function isWeekend(date: Date) {
   const day = date.getDay()
   return day === 0 || day === 6
@@ -335,30 +671,185 @@ function sumForDate(state: BudgetState, dateKey: string) {
   return recordsForDate(state, dateKey).reduce((sum, item) => sum + item.amount, 0)
 }
 
-function monthPrefix(date: Date) {
-  return isoDate(date).slice(0, 7)
+export function monthlyLivingBudget(state: BudgetState) {
+  const incomeTotal = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
+  const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
+  return Math.max(
+    incomeTotal
+    - fixedTotal
+    - (state.savingEnabled ? state.savingGoal : 0)
+    - state.datePoolMonthly
+    - state.eventReserveMonthly,
+    0,
+  )
 }
 
-function monthExpenseTotal(state: BudgetState, date: Date) {
-  const prefix = monthPrefix(date)
-  return state.expenses
-    .filter(item => item.date.startsWith(prefix))
-    .reduce((sum, item) => sum + item.amount, 0)
+function monthPlannedLivingBudget(state: BudgetState) {
+  const monthlyBudget = monthlyLivingBudget(state)
+  return monthlyBudget > 0 ? monthlyBudget : Math.max(state.currentBalance - state.savingGoal, 0)
 }
 
-function calculateEnvelopeStatus(state: BudgetState, date: Date) {
-  const prefix = monthPrefix(date)
+function roundToThousand(value: number) {
+  return Math.round(value / 1000) * 1000
+}
+
+function roundToTenThousand(value: number) {
+  return Math.round(value / 10000) * 10000
+}
+
+export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProfile) {
+  const incomeTotal = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
+  const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
+  const available = Math.max(state.currentBalance + incomeTotal - fixedTotal, 0)
+  let ratio = profile.moneyStyle === 'tight' ? 0.38 : profile.moneyStyle === 'loose' ? 0.18 : 0.3
+  if (profile.socialFrequency >= 10) ratio -= 0.05
+  if (profile.shoppingMonthly >= 300000) ratio -= 0.05
+  if (profile.lunch === 'buy' || profile.lunch === 'delivery' || profile.dinner === 'buy') ratio -= 0.03
+  return Math.max(roundToTenThousand(available * Math.max(ratio, 0.08)), 0)
+}
+
+export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
+  const lunchCost = { provided: 0, lunchbox: 20000, buy: 100000, delivery: 140000 }[profile.lunch]
+  const dinnerCost = { home: 80000, mixed: 130000, buy: 180000 }[profile.dinner]
+  const socialBudget = Math.min(30, Math.max(0, profile.socialFrequency)) * profile.socialPerVisit
+  const livingItemsBudget = { solo: 70000, family: 30000, share: 50000 }[state.housing]
+  const otherAdjust = { tight: -10000, balanced: 0, loose: 20000 }[profile.moneyStyle]
+  const fixedBudgets = {
+    식비: lunchCost + dinnerCost,
+    생활: livingItemsBudget,
+    교통: 30000,
+    쇼핑: profile.shoppingMonthly,
+    문화: socialBudget + profile.contentMonthly,
+  }
+  const fixedSum = fixedBudgets.식비 + fixedBudgets.생활 + fixedBudgets.교통 + fixedBudgets.쇼핑 + fixedBudgets.문화
+  return {
+    ...fixedBudgets,
+    기타: monthlyLivingBudget(state) - fixedSum + otherAdjust,
+  }
+}
+
+export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
+  const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
+  const { start, end } = periodBounds(state, new Date())
+  const periodDays = Math.max(1, daysBetween(start, end))
+  const periodRatio = periodDays / 30
+  return state.envelopes.map(envelope => ({
+    ...envelope,
+    periodLimit: roundToThousand(monthlyBudgets[envelope.name] * periodRatio),
+  }))
+}
+
+export function initializeSetupState(state: BudgetState, profile: BudgetCoachProfile, today: Date): BudgetState {
+  const savingGoal = state.savingEnabled ? state.savingGoal || suggestSavingAmount(state, profile) : 0
+  const envelopes = state.envelopes.some(envelope => envelope.periodLimit > 0)
+    ? state.envelopes
+    : suggestEnvelopeBudgets({ ...state, savingGoal }, profile)
+  return {
+    ...state,
+    savingGoal,
+    envelopes,
+    currentPeriodStart: isoDate(today),
+    currentPeriodStartingBalance: state.currentBalance,
+    currentPeriodPlan: envelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+    currentTransfers: [],
+    coachProfile: profile,
+    setupComplete: true,
+  }
+}
+
+export function nextOccurrence(item: IncomeItem, from: Date, fallbackInterval?: number): Date {
+  const anchor = parseIso(item.anchorDate)
+  if (item.cadence === 'monthly') {
+    for (let offset = 0; offset <= 2; offset += 1) {
+      const candidate = clampDayToMonth(from.getFullYear(), from.getMonth() + offset, anchor.getDate())
+      if (!isBeforeDate(candidate, from)) return candidate
+    }
+    return clampDayToMonth(from.getFullYear(), from.getMonth() + 3, anchor.getDate())
+  }
+
+  if (item.cadence === 'weekly' || item.cadence === 'biweekly') {
+    const step = item.cadence === 'weekly' ? 7 : 14
+    const n = Math.max(0, Math.ceil(daysBetween(anchor, from) / step))
+    return addDays(anchor, n * step)
+  }
+
+  const interval = Math.max(1, item.estIntervalDays ?? fallbackInterval ?? 30)
+  let candidate = anchor
+  while (isBeforeDate(candidate, from)) {
+    candidate = addDays(candidate, interval)
+  }
+  return candidate
+}
+
+export function estimateInterval(state: BudgetState) {
+  const dates = state.periods
+    .map(period => parseIso(period.endDate))
+    .sort((a, b) => a.getTime() - b.getTime())
+  if (dates.length < 2) return undefined
+  const gaps = dates.slice(1).map((date, index) => daysBetween(dates[index], date))
+  return Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
+}
+
+export function periodBounds(state: BudgetState, today: Date) {
+  const start = parseIso(state.currentPeriodStart)
+  const fallbackInterval = estimateInterval(state)
+
+  if (state.incomes.length > 0) {
+    const candidates = state.incomes.map(item => nextOccurrence(item, addDays(start, 1), fallbackInterval))
+    const end = candidates.reduce((min, date) => isBeforeDate(date, min) ? date : min, candidates[0])
+    return { start, end, overdue: isBeforeOrSameDate(end, today) }
+  }
+
+  if (state.noIncomeMode === 'targetDate' && state.targetDate) {
+    const end = parseIso(state.targetDate)
+    return { start, end, overdue: isBeforeOrSameDate(end, today) }
+  }
+
+  const end = addDays(start, 30)
+  return { start, end, overdue: isBeforeOrSameDate(end, today) }
+}
+
+function deriveMode(state: BudgetState) {
+  if (state.incomes.length > 0) return 'income'
+  return state.noIncomeMode
+}
+
+function deriveModeLabel(state: BudgetState) {
+  const mode = deriveMode(state)
+  if (mode === 'income') return '다음 입금일까지'
+  if (mode === 'targetDate') return '목표일까지'
+  return '페이스 관리 중'
+}
+
+export function projectRunway(state: BudgetState, today: Date) {
+  const startKey = isoDate(addDays(today, -14))
+  const endKey = isoDate(today)
+  const recentExpenses = state.expenses.filter(item => item.date >= startKey && item.date <= endKey)
+  const recentTotal = recentExpenses.reduce((sum, item) => sum + item.amount, 0)
+  if (recentTotal <= 0) return null
+  const earliestKey = recentExpenses.reduce((min, item) => item.date < min ? item.date : min, endKey)
+  const rawDays = daysBetween(parseIso(earliestKey), today) + 1
+  const daysOfHistory = Math.min(14, Math.max(7, rawDays))
+  const avgDaily = recentTotal / daysOfHistory
+  if (avgDaily <= 0) return null
+  return Math.floor(state.currentBalance / avgDaily)
+}
+
+export function calculateEnvelopeStatus(state: BudgetState, date: Date) {
+  const { start } = periodBounds(state, date)
+  const startKey = isoDate(start)
+  const todayKey = isoDate(date)
   const spentByEnvelope = state.expenses
-    .filter(item => item.date.startsWith(prefix))
+    .filter(item => item.date >= startKey && item.date <= todayKey)
     .reduce<Record<string, number>>((totals, item) => {
-      totals[item.envelopeId] = (totals[item.envelopeId] ?? 0) + item.amount
+      totals[item.category] = (totals[item.category] ?? 0) + item.amount
       return totals
     }, {})
 
   return state.envelopes.map(envelope => {
-    const spent = spentByEnvelope[envelope.id] ?? 0
-    const remaining = envelope.monthlyLimit - spent
-    const usageRatio = envelope.monthlyLimit > 0 ? spent / envelope.monthlyLimit : 0
+    const spent = spentByEnvelope[envelope.name] ?? 0
+    const remaining = envelope.periodLimit - spent
+    const usageRatio = envelope.periodLimit > 0 ? spent / envelope.periodLimit : 0
     const warning = remaining < 0
       ? 'over'
       : usageRatio >= 0.8
@@ -374,89 +865,31 @@ function calculateEnvelopeStatus(state: BudgetState, date: Date) {
   })
 }
 
-function expenseUntilDay(state: BudgetState, date: Date, deadlineDay: number) {
-  const prefix = monthPrefix(date)
-  const today = date.getDate()
-  return state.expenses
-    .filter(item => item.date.startsWith(prefix))
-    .filter(item => {
-      const day = Number(item.date.slice(8, 10))
-      return day >= today && day <= deadlineDay
-    })
-    .reduce((sum, item) => sum + item.amount, 0)
-}
-
-function nextIncomeDay(state: BudgetState, date: Date) {
-  const today = date.getDate()
-  const upcoming = state.incomes
-    .filter(item => item.day >= today)
-    .sort((a, b) => a.day - b.day)
-  return upcoming[0]?.day ?? daysInMonth(date) + 1
-}
-
-function incomeUntilDay(state: BudgetState, date: Date, endDay: number, includeEndDay: boolean) {
-  const today = date.getDate()
-  return state.incomes
-    .filter(item => item.day >= today && (includeEndDay ? item.day <= endDay : item.day < endDay))
-    .reduce((sum, item) => sum + item.amount, 0)
-}
-
-function fixedUntilDay(state: BudgetState, date: Date, endDay: number, includeEndDay: boolean) {
-  const today = date.getDate()
-  return state.fixedItems
-    .filter(item => item.day >= today && (includeEndDay ? item.day <= endDay : item.day < endDay))
-    .reduce((sum, item) => sum + item.amount, 0)
-}
-
 function recurringAmountBetween(
-  items: { day: number; amount: number }[],
+  items: ({ day: number; amount: number } | IncomeItem)[],
   startDate: Date,
   endDate: Date,
   includeEndDate = true,
 ) {
   if (isBeforeDate(endDate, startDate)) return 0
+  const monthSpan = Math.max(
+    2,
+    (endDate.getFullYear() - startDate.getFullYear()) * 12
+    + (endDate.getMonth() - startDate.getMonth()),
+  )
   let sum = 0
-  for (let monthOffset = 0; monthOffset <= 2; monthOffset += 1) {
+  for (let monthOffset = 0; monthOffset <= monthSpan; monthOffset += 1) {
     const cursor = new Date(startDate.getFullYear(), startDate.getMonth() + monthOffset, 1)
     items.forEach(item => {
-      const itemDate = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), item.day)
+      const itemDay = 'day' in item ? item.day : incomeDay(item)
+      const itemAmount = 'day' in item ? item.amount : incomePlanningAmount(item)
+      const itemDate = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), itemDay)
       const afterStart = isAfterOrSameDate(itemDate, startDate)
       const beforeEnd = includeEndDate ? isBeforeOrSameDate(itemDate, endDate) : isBeforeDate(itemDate, endDate)
-      if (afterStart && beforeEnd) sum += item.amount
+      if (afterStart && beforeEnd) sum += itemAmount
     })
   }
   return sum
-}
-
-function expenseBetweenDates(state: BudgetState, startDate: Date, endDate: Date) {
-  const startKey = isoDate(startDate)
-  const endKey = isoDate(endDate)
-  return state.expenses
-    .filter(item => item.date >= startKey && item.date <= endKey)
-    .reduce((sum, item) => sum + item.amount, 0)
-}
-
-function remainingWeightBetween(state: BudgetState, startDate: Date, endDate: Date) {
-  if (isBeforeDate(endDate, startDate)) return 1
-  const recordedDates = new Set([
-    ...state.expenses.map(item => item.date),
-    ...state.noSpendDates,
-  ])
-  let weight = 0
-  for (let cursor = new Date(startDate); isBeforeOrSameDate(cursor, endDate); cursor = addDays(cursor, 1)) {
-    if (recordedDates.has(isoDate(cursor))) continue
-    weight += weightForDate(cursor, state.lifestyleType)
-  }
-  return Math.max(weight, 1)
-}
-
-function nextSavingDeadlineDate(state: BudgetState, afterDate: Date) {
-  for (let monthOffset = 0; monthOffset <= 2; monthOffset += 1) {
-    const cursor = new Date(afterDate.getFullYear(), afterDate.getMonth() + monthOffset, 1)
-    const deadline = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), state.savingDeadline)
-    if (isBeforeDate(afterDate, deadline)) return deadline
-  }
-  return dateWithMonthDay(afterDate.getFullYear(), afterDate.getMonth() + 1, state.savingDeadline)
 }
 
 function lifestyleOption(type: LifestyleType) {
@@ -469,10 +902,7 @@ function weightForDate(date: Date, lifestyleType: LifestyleType) {
 }
 
 function allowanceForDate(date: Date, plan: ReturnType<typeof calculatePlan>, lifestyleType: LifestyleType) {
-  const day = date.getDate()
-  return day <= plan.deadline
-    ? (isWeekend(date) ? plan.weekend : plan.weekday)
-    : plan.afterDeadlineUnit * weightForDate(date, lifestyleType)
+  return plan.dailyUnit * weightForDate(date, lifestyleType)
 }
 
 function spendingTone(spent: number, allowance: number) {
@@ -482,88 +912,133 @@ function spendingTone(spent: number, allowance: number) {
 
 function dayTone(state: BudgetState, dateKey: string, spent: number, allowance: number) {
   if (isNoSpendDate(state, dateKey)) return 'under'
+  if (allowance <= 0) return 'none'
   return spendingTone(spent, allowance)
 }
 
-function remainingWeightRaw(state: BudgetState, date: Date, endDay: number) {
-  const prefix = monthPrefix(date)
-  const recordedDays = new Set(
-    [
-      ...state.expenses
-      .filter(item => item.date.startsWith(prefix))
-      .map(item => Number(item.date.slice(8, 10))),
-      ...state.noSpendDates
-        .filter(dateKey => dateKey.startsWith(prefix))
-        .map(dateKey => Number(dateKey.slice(8, 10))),
-    ],
-  )
-  let weight = 0
-  for (let day = date.getDate(); day <= endDay; day += 1) {
-    if (recordedDays.has(day)) continue
-    weight += weightForDate(new Date(date.getFullYear(), date.getMonth(), day), state.lifestyleType)
-  }
-  return weight
-}
-
-function remainingWeight(state: BudgetState, date: Date, endDay: number) {
-  return Math.max(remainingWeightRaw(state, date, endDay), 1)
-}
-
-function calculatePlan(state: BudgetState, today: Date) {
-  const monthEnd = daysInMonth(today)
-  const nextPayDay = nextIncomeDay(state, today)
-  const savingDeadline = Math.min(monthEnd, Math.max(today.getDate(), state.savingDeadline))
-  const canReserveSavingNow = state.savingGoal > 0 && state.currentBalance >= state.savingGoal
-  const paydayEnd = Math.min(monthEnd, nextPayDay - 1)
-  const activeEnd = canReserveSavingNow
-    ? savingDeadline
-    : Math.max(today.getDate(), paydayEnd)
-  const intervalIncome = incomeUntilDay(state, today, activeEnd, !canReserveSavingNow)
-  const intervalFixed = fixedUntilDay(state, today, activeEnd, true)
-  const intervalSpent = expenseUntilDay(state, today, activeEnd)
-  const intervalSaving = canReserveSavingNow ? state.savingGoal : 0
-  const budget = state.currentBalance + intervalIncome - intervalFixed - intervalSaving
-  const spent = monthExpenseTotal(state, today)
-  const remainingBudget = budget - intervalSpent
-  const unit = remainingBudget / remainingWeight(state, today, activeEnd)
-  const afterDeadlineStart = new Date(today.getFullYear(), today.getMonth(), activeEnd + 1)
-  const currentDeadlineDate = new Date(today.getFullYear(), today.getMonth(), activeEnd)
-  const afterDeadlineEnd = nextSavingDeadlineDate(state, currentDeadlineDate)
-  const afterDeadlineIncome = canReserveSavingNow
-    ? recurringAmountBetween(state.incomes, currentDeadlineDate, afterDeadlineEnd, false)
-    : 0
-  const afterDeadlineFixed = recurringAmountBetween(state.fixedItems, afterDeadlineStart, afterDeadlineEnd)
-  const afterDeadlineSpent = expenseBetweenDates(state, afterDeadlineStart, afterDeadlineEnd)
-  const afterDeadlineSaving = canReserveSavingNow && afterDeadlineIncome > 0 ? state.savingGoal : 0
-  const afterDeadlineBudget = afterDeadlineIncome - afterDeadlineFixed - afterDeadlineSaving - afterDeadlineSpent
-  const afterDeadlineUnit = afterDeadlineBudget / remainingWeightBetween(state, afterDeadlineStart, afterDeadlineEnd)
-  const option = lifestyleOption(state.lifestyleType)
+export function calculatePlan(state: BudgetState, today: Date) {
+  const { start, end, overdue } = periodBounds(state, today)
+  const endForCalc = end
   const todaySpent = sumForDate(state, isoDate(today))
+  const savingReserved = state.savingEnabled && state.savingGoal > 0 ? state.savingGoal : 0
+  const fixedRemaining = recurringAmountBetween(state.fixedItems, today, endForCalc, false)
+
+  if (overdue) {
+    return {
+      periodStart: start,
+      periodEnd: end,
+      daysUntilEnd: 0,
+      overdue,
+      dailyUnit: 0,
+      todayAllowance: 0,
+      todaySpent,
+      todayRemaining: -todaySpent,
+      fixedRemaining,
+      savingReserved,
+      mode: deriveMode(state),
+      modeLabel: deriveModeLabel(state),
+      runwayDays: projectRunway(state, today),
+    }
+  }
+
+  let remainingWeightedDays = 0
+  for (let cursor = new Date(today); isBeforeDate(cursor, endForCalc); cursor = addDays(cursor, 1)) {
+    remainingWeightedDays += weightForDate(cursor, state.lifestyleType)
+  }
+
+  const basePool = state.currentBalance + todaySpent - fixedRemaining - savingReserved
+  const dailyUnit = remainingWeightedDays > 0 ? basePool / remainingWeightedDays : 0
   const todayWeight = weightForDate(today, state.lifestyleType)
-  const todayIsRecorded = todaySpent > 0 || isNoSpendDate(state, isoDate(today))
-  const todayBaseBudget = remainingBudget + todaySpent
-  const todayBaseWeight = remainingWeightRaw(state, today, activeEnd) + (todayIsRecorded ? todayWeight : 0)
-  const todayAllowance = todayBaseBudget / Math.max(todayBaseWeight, 1) * todayWeight
+  const todayAllowance = dailyUnit * todayWeight
 
   return {
-    deadline: activeEnd,
-    nextPayDay: nextPayDay <= monthEnd ? nextPayDay : null,
-    mode: canReserveSavingNow ? 'saving' : 'survive',
-    modeLabel: canReserveSavingNow ? '저축일까지 관리 중' : '입금일까지 버티기',
-    futureIncome: intervalIncome,
-    remainingFixed: intervalFixed,
-    reservedSaving: intervalSaving,
-    recordedSpending: intervalSpent,
-    budget,
-    spent,
-    remainingBudget,
-    weekday: unit * option.weekdayWeight,
-    weekend: unit * option.weekendWeight,
-    afterDeadlineUnit,
+    periodStart: start,
+    periodEnd: end,
+    daysUntilEnd: Math.max(0, daysBetween(today, end)),
+    overdue,
+    dailyUnit,
     todayAllowance,
     todaySpent,
     todayRemaining: todayAllowance - todaySpent,
+    fixedRemaining,
+    savingReserved,
+    mode: deriveMode(state),
+    modeLabel: deriveModeLabel(state),
+    runwayDays: projectRunway(state, today),
   }
+}
+
+export function stateAfterAddExpense(state: BudgetState, record: ExpenseRecord): BudgetState {
+  return {
+    ...state,
+    currentBalance: state.currentBalance - record.amount,
+    noSpendDates: state.noSpendDates.filter(item => item !== record.date),
+    expenses: [...state.expenses, record],
+  }
+}
+
+export function stateAfterDeleteExpense(state: BudgetState, id: string): BudgetState {
+  const target = state.expenses.find(item => item.id === id)
+  if (!target) return state
+  return {
+    ...state,
+    currentBalance: state.currentBalance + target.amount,
+    expenses: state.expenses.filter(item => item.id !== id),
+  }
+}
+
+export function stateAfterUpdateExpense(state: BudgetState, id: string, updates: Pick<ExpenseRecord, 'amount' | 'memo' | 'category'>): BudgetState {
+  const target = state.expenses.find(item => item.id === id)
+  if (!target) return state
+  return {
+    ...state,
+    currentBalance: state.currentBalance + target.amount - updates.amount,
+    expenses: state.expenses.map(item => item.id === id ? { ...item, ...updates } : item),
+  }
+}
+
+export function transferEnvelope(state: BudgetState, from: Category, to: Category, amount: number): BudgetState {
+  return {
+    ...state,
+    envelopes: state.envelopes.map(envelope => {
+      if (envelope.name === from) return { ...envelope, periodLimit: envelope.periodLimit - amount }
+      if (envelope.name === to) return { ...envelope, periodLimit: envelope.periodLimit + amount }
+      return envelope
+    }),
+    currentTransfers: [...state.currentTransfers, { from, to, amount, at: new Date().toISOString() }],
+  }
+}
+
+export function closePeriod(state: BudgetState, today: Date, newBalance: number): BudgetState {
+  const endKey = isoDate(today)
+  const actualByCategory = calculateEnvelopeStatus(state, today)
+    .map(envelope => ({ category: envelope.name, amount: envelope.spent }))
+  const snapshot: PeriodSnapshot = {
+    id: makeId(),
+    startDate: state.currentPeriodStart,
+    endDate: endKey,
+    startingBalance: state.currentPeriodStartingBalance,
+    confirmedIncome: newBalance - state.currentBalance,
+    envelopePlan: state.currentPeriodPlan,
+    transfers: state.currentTransfers,
+    actualByCategory,
+  }
+  const nextState = { ...state, currentBalance: newBalance }
+  const newEnvelopes = suggestEnvelopeBudgets(nextState, state.coachProfile)
+  return {
+    ...state,
+    currentBalance: newBalance,
+    currentPeriodStart: endKey,
+    currentPeriodStartingBalance: newBalance,
+    currentPeriodPlan: newEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+    currentTransfers: [],
+    periods: [...state.periods, snapshot],
+    envelopes: newEnvelopes,
+  }
+}
+
+export function closePeriodNoIncome(state: BudgetState, today: Date): BudgetState {
+  return closePeriod(state, today, state.currentBalance)
 }
 
 function Field({
@@ -638,7 +1113,7 @@ function DayInput({ value, onChange }: { value: number; onChange: (value: number
       style={[styles.input, styles.dayInput]}
       value={text}
       keyboardType="numeric"
-      onFocus={() => setText('')}
+      selectTextOnFocus
       onChangeText={nextText => {
         const digits = nextText.replace(/[^\d]/g, '')
         setText(digits)
@@ -658,6 +1133,17 @@ function DayField({ label, value, onChange }: { label: string; value: number; on
       <Text style={styles.label}>{label}</Text>
       <DayInput value={value} onChange={onChange} />
     </View>
+  )
+}
+
+function DateField({ label, value, onPress }: { label: string; value?: string; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={styles.field} onPress={onPress}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.dateButton}>
+        <Text style={styles.dateButtonText}>{value ?? '날짜 선택'}</Text>
+      </View>
+    </TouchableOpacity>
   )
 }
 
@@ -684,15 +1170,6 @@ function LifestylePicker({ value, onChange }: { value: LifestyleType; onChange: 
   )
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'warn' | 'bad' }) {
-  return (
-    <View style={[styles.metric, tone === 'good' && styles.metricGood, tone === 'warn' && styles.metricWarn, tone === 'bad' && styles.metricBad]}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue}>{value}</Text>
-    </View>
-  )
-}
-
 function ExpenseRow({ item, onEdit, onDelete }: { item: ExpenseRecord; onEdit?: () => void; onDelete: () => void }) {
   return (
     <View style={styles.expenseRow}>
@@ -713,28 +1190,37 @@ function ExpenseRow({ item, onEdit, onDelete }: { item: ExpenseRecord; onEdit?: 
   )
 }
 
-function EnvelopePicker({
-  envelopes,
+function CoachQuestionCard({
+  question,
+  description,
+  options,
   value,
   onChange,
 }: {
-  envelopes: BudgetEnvelope[]
+  question: string
+  description: string
+  options: { value: string; label: string }[]
   value: string
   onChange: (value: string) => void
 }) {
   return (
-    <View style={styles.envelopeGrid}>
-      {envelopes.map(envelope => (
-        <TouchableOpacity
-          key={envelope.id}
-          style={[styles.envelopeChip, value === envelope.id && styles.envelopeChipActive]}
-          onPress={() => onChange(envelope.id)}
-        >
-          <Text style={[styles.envelopeChipText, value === envelope.id && styles.envelopeChipTextActive]}>
-            {envelope.name}
-          </Text>
-        </TouchableOpacity>
-      ))}
+    <View style={styles.coachQuestionCard}>
+      <Text style={styles.coachEyebrow}>예산 코치</Text>
+      <Text style={styles.coachQuestion}>{question}</Text>
+      <Text style={styles.coachDescription}>{description}</Text>
+      <View style={styles.coachOptionGrid}>
+        {options.map(option => (
+          <TouchableOpacity
+            key={option.value}
+            style={[styles.coachOption, value === option.value && styles.coachOptionActive]}
+            onPress={() => onChange(option.value)}
+          >
+            <Text style={[styles.coachOptionText, value === option.value && styles.coachOptionTextActive]}>
+              {option.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
     </View>
   )
 }
@@ -761,18 +1247,36 @@ export default function App() {
   const [quickAmount, setQuickAmount] = useState('')
   const [quickMemo, setQuickMemo] = useState('')
   const [quickCategory, setQuickCategory] = useState<Category>('식비')
-  const [quickEnvelopeId, setQuickEnvelopeId] = useState('')
+  const [coachProfile, setCoachProfile] = useState<BudgetCoachProfile>(initialCoachProfile)
+  const [setupStep, setSetupStep] = useState(0)
+  const [incomeSetupMode, setIncomeSetupMode] = useState<IncomeSetupMode>('regular')
+  const [setupReturnStep, setSetupReturnStep] = useState<number | null>(null)
+  const [balanceHelperOpen, setBalanceHelperOpen] = useState(false)
+  const [helperAccountBalance, setHelperAccountBalance] = useState(0)
+  const [helperSaving, setHelperSaving] = useState(0)
+  const [helperCommitted, setHelperCommitted] = useState(0)
+  const resultSeededRef = useRef(false)
+  const [keyboardVisible, setKeyboardVisible] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [modalAmount, setModalAmount] = useState('')
   const [modalMemo, setModalMemo] = useState('')
   const [modalCategory, setModalCategory] = useState<Category>('식비')
-  const [modalEnvelopeId, setModalEnvelopeId] = useState('')
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
+  const [datePickerTarget, setDatePickerTarget] = useState<{ kind: 'income'; id: string } | { kind: 'targetDate' } | null>(null)
+  const [incomeConfirmOpen, setIncomeConfirmOpen] = useState(false)
+  const [incomeConfirmBalance, setIncomeConfirmBalance] = useState(0)
+  const [incomePromptDismissed, setIncomePromptDismissed] = useState(false)
+  const [reportSnapshot, setReportSnapshot] = useState<PeriodSnapshot | null>(null)
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [transferFrom, setTransferFrom] = useState<Category>('쇼핑')
+  const [transferTo, setTransferTo] = useState<Category>('식비')
+  const [transferAmount, setTransferAmount] = useState(0)
   const today = useMemo(() => new Date(), [])
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
   const todayKey = isoDate(today)
   const plan = calculatePlan(state, today)
   const envelopeStatuses = calculateEnvelopeStatus(state, today)
+  const atSetupResult = SETUP_STEPS[setupStep]?.kind === 'result'
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -795,50 +1299,76 @@ export default function App() {
   }, [loaded, state])
 
   useEffect(() => {
-    const fallbackEnvelopeId = state.envelopes[0]?.id ?? ''
-    if (!quickEnvelopeId && fallbackEnvelopeId) setQuickEnvelopeId(fallbackEnvelopeId)
-    if (!modalEnvelopeId && fallbackEnvelopeId) setModalEnvelopeId(fallbackEnvelopeId)
-  }, [modalEnvelopeId, quickEnvelopeId, state.envelopes])
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true))
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false))
+    return () => {
+      showSubscription.remove()
+      hideSubscription.remove()
+    }
+  }, [])
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState !== 'active') {
+        Keyboard.dismiss()
+      }
+      setKeyboardVisible(false)
+    })
+    return () => subscription.remove()
+  }, [])
+
+  useEffect(() => {
+    if (!loaded || !state.setupComplete || state.incomes.length > 0) return
+    if (!periodBounds(state, today).overdue) return
+    setState(prev => closePeriodNoIncome(prev, today))
+  }, [loaded, state.setupComplete, state.incomes.length, state.currentPeriodStart, state.noIncomeMode, state.targetDate, today])
+
+  // 결과 스텝에 처음 들어올 때 한 번, 제안 저축액·예산을 실제 state에 시드한다.
+  // 이후 입력칸은 state에 직접 바인딩되므로 사용자가 손본 값이 유지된다.
+  // 스텝을 벗어나면 가드를 풀어, 답변을 바꾸고 다시 들어오면 새 제안으로 다시 시드한다.
+  useEffect(() => {
+    if (!atSetupResult) {
+      resultSeededRef.current = false
+      return
+    }
+    if (resultSeededRef.current) return
+    resultSeededRef.current = true
+    setState(prev => {
+      const saving = prev.savingEnabled ? suggestSavingAmount(prev, coachProfile) : 0
+      return {
+        ...prev,
+        savingGoal: saving,
+        envelopes: suggestEnvelopeBudgets({ ...prev, savingGoal: saving }, coachProfile),
+      }
+    })
+  }, [atSetupResult, coachProfile])
 
   function patch(next: Partial<BudgetState>) {
     setState(prev => ({ ...prev, ...next }))
   }
 
-  function hasEnvelope(envelopeId: string) {
-    return state.envelopes.some(item => item.id === envelopeId)
-  }
-
-  function addExpense(date: string, amountText: string, memo: string, category: Category, envelopeId: string) {
+  function addExpense(date: string, amountText: string, memo: string, category: Category) {
     const amount = numeric(amountText)
     if (!amount) {
       Alert.alert('금액 입력', '쓴 금액을 입력해주세요.')
       return false
     }
-    if (!hasEnvelope(envelopeId)) {
-      Alert.alert('봉투 선택', '어느 봉투에서 쓸 돈인지 골라주세요.')
-      return false
+    const record: ExpenseRecord = {
+      id: makeId(),
+      date,
+      amount,
+      memo: memo.trim(),
+      category,
+      createdAt: new Date().toISOString(),
     }
-    setState(prev => ({
-      ...prev,
-      noSpendDates: prev.noSpendDates.filter(item => item !== date),
-      expenses: [
-        ...prev.expenses,
-        {
-          id: makeId(),
-          date,
-          amount,
-          memo: memo.trim(),
-          category,
-          envelopeId,
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    }))
+    setState(prev => stateAfterAddExpense(prev, record))
     return true
   }
 
   function deleteExpense(id: string) {
-    setState(prev => ({ ...prev, expenses: prev.expenses.filter(item => item.id !== id) }))
+    setState(prev => stateAfterDeleteExpense(prev, id))
   }
 
   function toggleNoSpend(dateKey: string) {
@@ -858,7 +1388,6 @@ export default function App() {
     setModalAmount(item.amount.toLocaleString('ko-KR'))
     setModalMemo(item.memo)
     setModalCategory(item.category)
-    setModalEnvelopeId(item.envelopeId)
   }
 
   function saveModalExpense() {
@@ -868,21 +1397,11 @@ export default function App() {
       Alert.alert('금액 입력', '쓴 금액을 입력해주세요.')
       return
     }
-    if (!hasEnvelope(modalEnvelopeId)) {
-      Alert.alert('봉투 선택', '어느 봉투에서 쓸 돈인지 골라주세요.')
-      return
-    }
     if (editingExpenseId) {
-      setState(prev => ({
-        ...prev,
-        noSpendDates: prev.noSpendDates.filter(item => item !== selectedDate),
-        expenses: prev.expenses.map(item => item.id === editingExpenseId
-          ? { ...item, amount, memo: modalMemo.trim(), category: modalCategory, envelopeId: modalEnvelopeId }
-          : item),
-      }))
+      setState(prev => stateAfterUpdateExpense(prev, editingExpenseId, { amount, memo: modalMemo.trim(), category: modalCategory }))
       setEditingExpenseId(null)
     } else {
-      const saved = addExpense(selectedDate, modalAmount, modalMemo, modalCategory, modalEnvelopeId)
+      const saved = addExpense(selectedDate, modalAmount, modalMemo, modalCategory)
       if (!saved) return
     }
     setModalAmount('')
@@ -899,23 +1418,141 @@ export default function App() {
   }
 
   function addIncome() {
-    patch({ incomes: [...state.incomes, { id: makeId(), name: '', day: 25, amount: 0 }] })
+    const cadence: Cadence = incomeSetupMode === 'irregular' ? 'irregular' : 'monthly'
+    patch({
+      incomes: [
+        ...state.incomes,
+        {
+          id: makeId(),
+          name: cadence === 'irregular' ? '' : '월급',
+          amount: null,
+          cadence,
+          anchorDate: isoDate(clampDayToMonth(today.getFullYear(), today.getMonth(), cadence === 'monthly' ? 25 : today.getDate())),
+          ...(cadence === 'irregular' ? { estIntervalDays: 30 } : {}),
+        },
+      ],
+    })
+  }
+
+  function chooseNoIncome() {
+    patch({ incomes: [], noIncomeMode: state.noIncomeMode ?? 'openEnded' })
   }
 
   function updateIncome(id: string, updates: Partial<IncomeItem>) {
-    patch({ incomes: state.incomes.map(item => item.id === id ? { ...item, ...updates } : item) })
+    const next = state.incomes.map(item => item.id === id ? { ...item, ...updates } : item)
+    patch({ incomes: next })
   }
 
   function addFixed() {
     patch({ fixedItems: [...state.fixedItems, { id: makeId(), name: '', day: 25, amount: 0 }] })
   }
 
-  function updateEnvelope(id: string, updates: Partial<BudgetEnvelope>) {
-    patch({ envelopes: state.envelopes.map(item => item.id === id ? { ...item, ...updates } : item) })
+  function updateEnvelope(id: string, updates: Omit<Partial<BudgetEnvelope>, 'name'> & { name?: string }) {
+    const { name, ...rest } = updates
+    const normalizedUpdates: Partial<BudgetEnvelope> = {
+      ...rest,
+      ...(typeof name === 'string' ? { name: normalizeCategory(name) } : {}),
+    }
+    patch({ envelopes: state.envelopes.map(item => item.id === id ? { ...item, ...normalizedUpdates } : item) })
+  }
+
+  function updateSetupEnvelopeLimit(id: string, periodLimit: number) {
+    const target = state.envelopes.find(envelope => envelope.id === id)
+    if (!target) return
+    if (target.name === '기타') {
+      patch({ envelopes: state.envelopes.map(envelope => envelope.id === id ? { ...envelope, periodLimit } : envelope) })
+      return
+    }
+    const delta = periodLimit - target.periodLimit
+    patch({
+      envelopes: state.envelopes.map(envelope => {
+        if (envelope.id === id) return { ...envelope, periodLimit }
+        if (envelope.name === '기타') return { ...envelope, periodLimit: envelope.periodLimit - delta }
+        return envelope
+      }),
+    })
   }
 
   function updateFixed(id: string, updates: Partial<FixedItem>) {
-    patch({ fixedItems: state.fixedItems.map(item => item.id === id ? { ...item, ...updates } : item) })
+    const next = state.fixedItems.map(item => item.id === id ? { ...item, ...updates } : item)
+    patch({ fixedItems: next })
+  }
+
+  function handleDatePicked(date?: Date) {
+    if (!datePickerTarget || !date) {
+      setDatePickerTarget(null)
+      return
+    }
+    const dateKey = isoDate(date)
+    if (datePickerTarget.kind === 'income') {
+      updateIncome(datePickerTarget.id, { anchorDate: dateKey })
+    } else {
+      patch({ targetDate: dateKey })
+    }
+    setDatePickerTarget(null)
+  }
+
+  function openIncomeConfirm() {
+    const expectedIncome = state.incomes[0]?.amount ?? 0
+    setIncomeConfirmBalance(state.currentBalance + expectedIncome)
+    setIncomeConfirmOpen(true)
+  }
+
+  function confirmIncomeBalance() {
+    Alert.alert('입금 확인', '입금 포함 지금 잔액으로 새 구간을 시작할까요?', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '확정',
+        onPress: () => {
+          const next = closePeriod(state, today, incomeConfirmBalance)
+          setState(next)
+          setReportSnapshot(next.periods[next.periods.length - 1] ?? null)
+          setIncomeConfirmOpen(false)
+          setIncomePromptDismissed(false)
+        },
+      },
+    ])
+  }
+
+  function closeIncomeConfirm() {
+    setIncomeConfirmOpen(false)
+    setIncomeConfirmBalance(0)
+  }
+
+  function closeTransferModal() {
+    setTransferOpen(false)
+    setTransferAmount(0)
+    setTransferFrom('쇼핑')
+    setTransferTo('식비')
+  }
+
+  function closeReportModal() {
+    setReportSnapshot(null)
+  }
+
+  function submitEnvelopeTransfer() {
+    const invalid = !transferAmount || transferFrom === transferTo
+    if (invalid && transferFrom === transferTo) {
+      Alert.alert('예산 선택', '서로 다른 예산을 선택해주세요.')
+      return
+    }
+    if (!transferAmount) {
+      Alert.alert('금액 입력', '옮길 금액을 입력해주세요.')
+      return
+    }
+    setState(prev => transferEnvelope(prev, transferFrom, transferTo, transferAmount))
+    Alert.alert('예산 이동 완료', `${transferFrom} → ${transferTo} ${money(transferAmount)} 옮겼어요. 총 예산은 그대로입니다.`)
+    closeTransferModal()
+  }
+
+  function applyEnvelopeSuggestion() {
+    const saving = state.savingEnabled ? suggestSavingAmount(state, coachProfile) : 0
+    const livingBudget = monthPlannedLivingBudget({ ...state, savingGoal: saving })
+    if (!livingBudget) {
+      Alert.alert('먼저 기준을 입력해주세요', '생활비 잔액이나 들어올 돈을 입력하면 예산을 제안할 수 있어요.')
+      return
+    }
+    patch({ savingGoal: saving, envelopes: suggestEnvelopeBudgets({ ...state, savingGoal: saving }, coachProfile) })
   }
 
   function updateDailyNote(dateKey: string, note: string) {
@@ -929,145 +1566,513 @@ export default function App() {
   }
 
   function renderSetup() {
-    const canStartSetup = state.currentBalance > 0 || state.incomes.some(item => item.amount > 0)
-    function finishSetup() {
-      if (!canStartSetup) {
-        Alert.alert('생활비 기준 필요', '현재 생활비 잔액이나 앞으로 들어올 돈 중 하나는 입력해주세요.')
+    const savingStep = 11
+    const resultStep = 12
+    const totalSetupSteps = TOTAL_SETUP_STEPS
+    const suggestedSaving = state.savingEnabled ? suggestSavingAmount(state, coachProfile) : 0
+    const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
+    const envelopeTotal = state.envelopes.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
+    const helperFreeBalance = Math.max(helperAccountBalance - helperSaving - helperCommitted, 0)
+    const monthlyBudgets = monthlyEnvelopeBudgets(state, coachProfile)
+    const monthlyBudgetTotal = CATEGORIES.reduce((sum, category) => sum + monthlyBudgets[category], 0)
+    const monthlyBudgetPool = monthlyLivingBudget(state)
+    const canStartSetup = state.currentBalance > 0 && (state.incomes.length > 0 || incomeSetupMode === 'none')
+
+    function advanceSetup() {
+      if (setupReturnStep !== null && setupStep !== resultStep) {
+        setSetupStep(setupReturnStep)
+        setSetupReturnStep(null)
         return
       }
-      patch({ setupComplete: true })
+      setSetupStep(prev => Math.min(prev + 1, resultStep))
     }
 
-    return (
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-        automaticallyAdjustKeyboardInsets
-        contentContainerStyle={[styles.content, styles.setupContent]}
-      >
-        <View style={styles.setupHero}>
-          <Text style={styles.eyebrow}>시작 설정</Text>
-          <Text style={styles.setupTitle}>몇 가지만 물어볼게요</Text>
-          <Text style={styles.setupCopy}>
-            계좌 전체 금액 말고, 지금 당장 생활비로 써도 되는 돈부터 잡으면 계산이 훨씬 덜 헷갈립니다.
-          </Text>
-        </View>
+    function goBack() {
+      setSetupStep(prev => Math.max(prev - 1, 0))
+    }
 
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>1</Text>
-          <Text style={styles.sectionTitle}>지금 생활비로 쓸 수 있는 돈이 얼마예요?</Text>
-          <Text style={styles.helperText}>계좌 전체 잔액이 아니라, 저축/카드값을 빼고 실제로 써도 되는 돈입니다.</Text>
-          <MoneyInput label="자유 생활비 잔액" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
-        </View>
+    function makeIncome(cadence: Cadence): IncomeItem {
+      return {
+        id: makeId(),
+        name: cadence === 'weekly' ? '주급' : cadence === 'irregular' ? '수입' : '월급',
+        amount: null,
+        cadence,
+        anchorDate: isoDate(clampDayToMonth(today.getFullYear(), today.getMonth(), cadence === 'monthly' ? 25 : today.getDate())),
+        ...(cadence === 'irregular' ? { estIntervalDays: 30 } : {}),
+      }
+    }
 
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>2</Text>
-          <Text style={styles.sectionTitle}>다음 돈은 언제 얼마 들어와요?</Text>
-          <Text style={styles.helperText}>월급이 두 번 들어오면 10일, 25일처럼 각각 추가하면 됩니다.</Text>
-          {state.incomes.length === 0 && (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>월급이나 용돈처럼 앞으로 들어올 돈이 있으면 추가해주세요.</Text>
+    function chooseIncomeMode(mode: IncomeSetupMode) {
+      setIncomeSetupMode(mode)
+      if (mode === 'none') {
+        patch({ incomes: [], noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })
+      } else {
+        const cadence: Cadence = mode === 'irregular' ? 'irregular' : 'monthly'
+        patch({ incomes: [makeIncome(cadence)] })
+      }
+      setSetupStep(2)
+    }
+
+    function goNext() {
+      if (setupStep === 0 && state.currentBalance <= 0) {
+        Alert.alert('잔액을 입력해주세요')
+        return
+      }
+      if (setupStep === 2) {
+        if (incomeSetupMode === 'none') {
+          if (state.noIncomeMode === 'targetDate' && !state.targetDate) {
+            Alert.alert('날짜를 선택해주세요', '이 돈으로 언제까지 써야 하는지 선택해주세요.')
+            return
+          }
+        } else if (state.incomes.length === 0) {
+          Alert.alert('수입을 입력해주세요', '수입 구조를 하나 이상 추가해주세요.')
+          return
+        }
+      }
+      advanceSetup()
+    }
+
+    function jumpToSetupStep(step: number) {
+      setSetupReturnStep(resultStep)
+      setSetupStep(step)
+    }
+
+    function finishSetup() {
+      if (!canStartSetup) {
+        Alert.alert('필수 정보 필요', '잔액과 수입 구조를 입력해주세요.')
+        return
+      }
+      setState(prev => initializeSetupState(prev, coachProfile, today))
+    }
+
+    function renderIncomeFields(item: IncomeItem) {
+      return (
+        <View key={item.id} style={styles.incomeSetupCard}>
+          <View style={styles.setupEditRow}>
+            <View style={styles.setupNameField}>
+              <Text style={styles.miniLabel}>이름</Text>
+              <TextInput
+                style={styles.input}
+                value={item.name}
+                onChangeText={name => updateIncome(item.id, { name })}
+                placeholder="수입명"
+                placeholderTextColor={colors.subtle}
+                selectTextOnFocus
+                autoCorrect={false}
+                spellCheck={false}
+              />
+            </View>
+            <View style={styles.setupMoneyField}>
+              <Text style={styles.miniLabel}>금액 선택</Text>
+              <TextInput
+                style={styles.input}
+                value={item.amount ? item.amount.toLocaleString('ko-KR') : ''}
+                keyboardType="numeric"
+                onChangeText={amount => updateIncome(item.id, { amount: amount.trim() ? numeric(amount) : null })}
+                placeholder="미정"
+                placeholderTextColor={colors.subtle}
+              />
+            </View>
+            <TouchableOpacity style={styles.setupRemoveButton} onPress={() => patch({ incomes: state.incomes.filter(row => row.id !== item.id) })}>
+              <Text style={styles.removeText}>삭제</Text>
+            </TouchableOpacity>
+          </View>
+
+          {incomeSetupMode === 'regular' && renderIncomeTimingRow(item)}
+          {incomeSetupMode !== 'regular' && (
+            <DateField
+              label={item.cadence === 'irregular' ? '최근에 마지막으로 입금받은 날?' : '기준 입금일'}
+              value={item.anchorDate}
+              onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })}
+            />
+          )}
+          {item.cadence === 'irregular' && (
+            <Field
+              label="보통 며칠 간격으로 들어와요?"
+              value={item.estIntervalDays ? `${item.estIntervalDays}` : ''}
+              onChange={value => updateIncome(item.id, { estIntervalDays: numeric(value) || undefined })}
+              keyboardType="numeric"
+            />
+          )}
+        </View>
+      )
+    }
+
+    function renderIncomeTimingRow(item: IncomeItem) {
+      return (
+        <View style={styles.incomeTimingRow}>
+          <View style={styles.incomeCadenceChips}>
+            {CADENCE_OPTIONS.filter(option => option.key !== 'irregular').map(option => (
+              <TouchableOpacity
+                key={option.key}
+                style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
+                onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
+              >
+                <Text style={[styles.chipText, item.cadence === option.key && styles.chipTextActive]}>{option.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {item.cadence === 'monthly' ? (
+            <View style={styles.inlineDayField}>
+              <Text style={styles.miniLabel}>매달 며칠?</Text>
+              <DayInput value={incomeDay(item)} onChange={day => updateIncome(item.id, incomeWithDay(item, day, today))} />
+            </View>
+          ) : (
+            <View style={{ flex: 1 }}>
+              <DateField label="기준 입금일" value={item.anchorDate} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })} />
             </View>
           )}
-          {state.incomes.map(item => (
-            <View key={item.id} style={styles.setupEditRow}>
-              <View style={styles.setupNameField}>
-                <Text style={styles.miniLabel}>용도</Text>
-                <TextInput
-                  style={styles.input}
-                  value={item.name}
-                  onChangeText={name => updateIncome(item.id, { name })}
-                  placeholder="월급"
-                  placeholderTextColor={colors.subtle}
-                  selectTextOnFocus
-                  autoCorrect={false}
-                  spellCheck={false}
+        </View>
+      )
+    }
+
+    function renderSetupBody() {
+      if (setupStep === 0) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>지금 생활비로 쓸 수 있는 돈이{"\n"}얼마예요?</Text>
+            <Text style={styles.setupQuestionCopy}>통장 전체가 아니라 이번에 자유롭게 쓸 부분만. 저축할 돈·카드값·이미 약속된 돈은 빼고 적으세요.</Text>
+            <MoneyInput label="자유 생활비 잔액" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
+            <TouchableOpacity style={styles.backButton} onPress={() => setBalanceHelperOpen(prev => !prev)}>
+              <Text style={styles.addText}>헷갈리면 도우미 펼치기</Text>
+            </TouchableOpacity>
+            {balanceHelperOpen && (
+              <View style={styles.suggestionCard}>
+                <MoneyInput label="통장 전체 잔액" value={helperAccountBalance} onChange={setHelperAccountBalance} />
+                <MoneyInput label="저축할 돈" value={helperSaving} onChange={setHelperSaving} />
+                <MoneyInput label="카드값·약속" value={helperCommitted} onChange={setHelperCommitted} />
+                <BreakdownRow label="자유 생활비" value={money(helperFreeBalance)} tone="plus" />
+                <TouchableOpacity
+                  style={styles.setupPrimaryButton}
+                  onPress={() => {
+                    patch({ currentBalance: helperFreeBalance })
+                    setBalanceHelperOpen(false)
+                  }}
+                >
+                  <Text style={styles.setupPrimaryButtonText}>이 값으로 채우기</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )
+      }
+
+      if (setupStep === 1) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>돈은 어떻게 들어와요?</Text>
+            <Text style={styles.setupQuestionCopy}>정기적이면 자동으로 다음 입금일을 계산해드려요. 들쭉날쭉이거나 지금 수입이 없어도 괜찮아요.</Text>
+            {([
+              ['regular', '정기적으로 들어와요', '월급·용돈·주급 등'],
+              ['irregular', '들쭉날쭉이에요', '프리랜서·자영업'],
+              ['none', '지금은 수입이 없어요', '취준·휴직·학생'],
+            ] as [IncomeSetupMode, string, string][]).map(([mode, title, description]) => (
+              <TouchableOpacity
+                key={mode}
+                style={[styles.lifestyleOption, incomeSetupMode === mode && styles.lifestyleOptionActive]}
+                onPress={() => chooseIncomeMode(mode)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.lifestyleTitle, incomeSetupMode === mode && styles.lifestyleTitleActive]}>{title}</Text>
+                  <Text style={styles.lifestyleDescription}>{description}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )
+      }
+
+      if (setupStep === 2) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            {incomeSetupMode === 'none' ? (
+              <View style={styles.setupSingleQuestion}>
+                <Text style={styles.setupQuestionTitle}>이 돈으로 언제까지 써야 해요?</Text>
+                <Text style={styles.setupQuestionCopy}>날짜가 있으면 목표일까지 나눠 쓰고, 없으면 30일 페이스로 관리해요.</Text>
+                <View style={styles.chipGrid}>
+                  <View style={styles.chipSlot}>
+                    <TouchableOpacity
+                      style={[styles.chip, state.noIncomeMode === 'targetDate' && styles.chipActive]}
+                      onPress={() => patch({ noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })}
+                    >
+                      <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.chipTextActive]}>특정 날짜까지</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.chipSlot}>
+                    <TouchableOpacity
+                      style={[styles.chip, state.noIncomeMode === 'openEnded' && styles.chipActive]}
+                      onPress={() => patch({ noIncomeMode: 'openEnded' })}
+                    >
+                      <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.chipTextActive]}>정해진 날 없음</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                {state.noIncomeMode === 'targetDate' && (
+                  <DateField label="목표 날짜" value={state.targetDate} onPress={() => setDatePickerTarget({ kind: 'targetDate' })} />
+                )}
+              </View>
+            ) : (
+              <>
+                <Text style={styles.setupQuestionTitle}>{incomeSetupMode === 'regular' ? '돈은 언제, 얼마씩 들어와요?' : '최근 수입 패턴을 알려주세요'}</Text>
+                <Text style={styles.setupQuestionCopy}>금액은 비워도 됩니다. 이번 구간 계산에는 날짜만 사용해요.</Text>
+                {state.incomes.map(renderIncomeFields)}
+                {state.incomes.length === 0 && (
+                  <View style={styles.emptyBox}><Text style={styles.emptyText}>수입 구조를 하나 이상 추가해주세요.</Text></View>
+                )}
+                <TouchableOpacity style={styles.secondaryButton} onPress={addIncome}>
+                  <Text style={styles.secondaryButtonText}>수입 추가</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        )
+      }
+
+      if (setupStep === 3) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>매달 거의 고정으로 빠지는 돈이 있어요?</Text>
+            <Text style={styles.setupQuestionCopy}>월세, 통신비, 구독, 보험, 헬스 같은 것들. 없으면 그냥 다음.</Text>
+            <View style={styles.chipGrid}>
+              {([
+                ['solo', '자취'],
+                ['family', '본가'],
+                ['share', '룸쉐어'],
+              ] as [HousingType, string][]).map(([housing, label]) => (
+                <View key={housing} style={styles.chipSlot}>
+                  <TouchableOpacity style={[styles.chip, state.housing === housing && styles.chipActive]} onPress={() => patch({ housing })}>
+                    <Text style={[styles.chipText, state.housing === housing && styles.chipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+            {state.fixedItems.length === 0 && (
+              <View style={styles.emptyBox}><Text style={styles.emptyText}>없으면 건너뛰어도 됩니다.</Text></View>
+            )}
+            {state.fixedItems.map(item => (
+              <View key={item.id} style={styles.setupEditRow}>
+                <View style={styles.setupNameField}>
+                  <Text style={styles.miniLabel}>용도</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={item.name}
+                    onChangeText={name => updateFixed(item.id, { name })}
+                    placeholder="통신비"
+                    placeholderTextColor={colors.subtle}
+                    selectTextOnFocus
+                    autoCorrect={false}
+                    spellCheck={false}
+                  />
+                </View>
+                <View style={styles.setupDayField}>
+                  <Text style={styles.miniLabel}>날짜 (일)</Text>
+                  <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} />
+                </View>
+                <View style={styles.setupMoneyField}>
+                  <Text style={styles.miniLabel}>금액</Text>
+                  <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
+                </View>
+                <TouchableOpacity style={styles.setupRemoveButton} onPress={() => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity style={styles.secondaryButton} onPress={addFixed}>
+              <Text style={styles.secondaryButtonText}>고정 지출 추가</Text>
+            </TouchableOpacity>
+            <Text style={styles.helperText}>가스비처럼 겨울에 크게 늘어나는 항목은 연 평균값으로 잡으세요. 예: 여름 2만 / 겨울 7만이면 4만으로.</Text>
+          </View>
+        )
+      }
+
+      if (setupStep === 4) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>매달 자동으로 떼둘 돈이 있어요?</Text>
+            <Text style={styles.setupQuestionCopy}>고정비·저축 외에 매달 같은 금액으로 빠지는 것들. 예산 가용 풀에서 미리 빠집니다.</Text>
+            <View style={styles.suggestionCard}>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.suggestionTitle}>데이트 통장</Text>
+                  <Text style={styles.suggestionCopy}>공동 계좌를 굴리고 있으면 월 본인 부담액을 넣으세요.</Text>
+                </View>
+                <Switch
+                  value={state.datePoolMonthly > 0}
+                  onValueChange={enabled => patch({ datePoolMonthly: enabled ? state.datePoolMonthly || 100000 : 0 })}
+                  trackColor={{ false: colors.borderMd, true: colors.teal }}
+                  thumbColor={colors.surface}
+                  ios_backgroundColor={colors.borderMd}
                 />
               </View>
-              <View style={styles.setupDayField}>
-                <Text style={styles.miniLabel}>날짜 (일)</Text>
-                <DayInput value={item.day} onChange={day => updateIncome(item.id, { day })} />
-              </View>
-              <View style={styles.setupMoneyField}>
-                <Text style={styles.miniLabel}>금액</Text>
-                <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateIncome(item.id, { amount: numeric(amount) })} />
-              </View>
+              {state.datePoolMonthly > 0 && (
+                <MoneyInput label="월 본인 부담액" value={state.datePoolMonthly} onChange={value => patch({ datePoolMonthly: value })} />
+              )}
             </View>
-          ))}
-          <TouchableOpacity style={styles.secondaryButton} onPress={addIncome}>
-            <Text style={styles.secondaryButtonText}>수입일 추가</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>3</Text>
-          <Text style={styles.sectionTitle}>언제까지 얼마를 남기고 싶어요?</Text>
-          <Text style={styles.helperText}>목표가 없으면 0원으로 두고, 다음 입금일까지 버티는 계산만 볼 수 있습니다.</Text>
-          <View style={styles.savingRow}>
-            <View style={styles.savingDayField}>
-              <DayField label="저축 마감일" value={state.savingDeadline} onChange={value => patch({ savingDeadline: value })} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <MoneyInput label="저축 목표 금액" value={state.savingGoal} onChange={value => patch({ savingGoal: value })} />
+            <View style={styles.suggestionCard}>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.suggestionTitle}>이벤트 적립</Text>
+                  <Text style={styles.suggestionCopy}>명절·생일·기념일 같은 갑작스러운 지출 대비. 권장 3-5만.</Text>
+                </View>
+                <Switch
+                  value={state.eventReserveMonthly > 0}
+                  onValueChange={enabled => patch({ eventReserveMonthly: enabled ? state.eventReserveMonthly || 40000 : 0 })}
+                  trackColor={{ false: colors.borderMd, true: colors.teal }}
+                  thumbColor={colors.surface}
+                  ios_backgroundColor={colors.borderMd}
+                />
+              </View>
+              {state.eventReserveMonthly > 0 && (
+                <MoneyInput label="월 적립액" value={state.eventReserveMonthly} onChange={value => patch({ eventReserveMonthly: value })} />
+              )}
             </View>
           </View>
-        </View>
+        )
+      }
 
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>4</Text>
-          <Text style={styles.sectionTitle}>이번 달에 꼭 빠질 돈이 뭐예요?</Text>
-          <Text style={styles.helperText}>데이트통장에 넣는 돈도 매달 빠지는 돈이면 고정 지출로 넣는 게 좋습니다.</Text>
-          {state.fixedItems.length === 0 && (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>관리비, 통신비, 데이트통장처럼 정해진 지출을 넣으면 더 정확해집니다.</Text>
-            </View>
-          )}
-          {state.fixedItems.map(item => (
-            <View key={item.id} style={styles.setupEditRow}>
-              <View style={styles.setupNameField}>
-                <Text style={styles.miniLabel}>용도</Text>
-                <TextInput
-                  style={styles.input}
-                  value={item.name}
-                  onChangeText={name => updateFixed(item.id, { name })}
-                  placeholder="가스비"
-                  placeholderTextColor={colors.subtle}
-                  selectTextOnFocus
-                  autoCorrect={false}
-                  spellCheck={false}
+      if (setupStep === 5) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>평일이랑 주말 소비 리듬은{"\n"}어때요?</Text>
+            <Text style={styles.setupQuestionCopy}>하루한도가 요일마다 다르게 분배돼요. 모르면 균등형.</Text>
+            <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
+          </View>
+        )
+      }
+
+      if (setupStep === 6) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <CoachQuestionCard
+              question="평일 점심은 어떻게 해결해요?"
+              description="점심과 저녁 답으로 식비 예산을 직접 계산해요."
+              options={[
+                { value: 'provided', label: '회사·학교에서 나와요' },
+                { value: 'lunchbox', label: '도시락 싸 가요' },
+                { value: 'buy', label: '사 먹어요' },
+                { value: 'delivery', label: '배달도 자주' },
+              ]}
+              value={coachProfile.lunch}
+              onChange={value => setCoachProfile(prev => ({ ...prev, lunch: value as BudgetCoachProfile['lunch'] }))}
+            />
+            <CoachQuestionCard
+              question="저녁은 보통 어떻게?"
+              description="저녁 패턴까지 합쳐 식비 월 예산을 잡아요."
+              options={[
+                { value: 'home', label: '거의 해먹어요' },
+                { value: 'mixed', label: '반반 정도' },
+                { value: 'buy', label: '거의 사 먹어요' },
+              ]}
+              value={coachProfile.dinner}
+              onChange={value => setCoachProfile(prev => ({ ...prev, dinner: value as BudgetCoachProfile['dinner'] }))}
+            />
+          </View>
+        )
+      }
+
+      if (setupStep === 7) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>친구 약속은 한 달에 어느 정도예요?</Text>
+            <Field label="한 달 약속 횟수" value={`${coachProfile.socialFrequency}`} onChange={value => setCoachProfile(prev => ({ ...prev, socialFrequency: Math.min(30, numeric(value)) }))} keyboardType="numeric" />
+            <MoneyInput label="한 번 평균 금액" value={coachProfile.socialPerVisit} onChange={value => setCoachProfile(prev => ({ ...prev, socialPerVisit: value }))} />
+          </View>
+        )
+      }
+
+      if (setupStep === 8) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>옷·물건 등 한 달에 평균 얼마 써요?</Text>
+            <Text style={styles.setupQuestionCopy}>고정 구독 빼고. 옷·신발·가방·잡화 등.</Text>
+            <MoneyInput label="쇼핑 월 평균" value={coachProfile.shoppingMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, shoppingMonthly: value }))} />
+          </View>
+        )
+      }
+
+      if (setupStep === 9) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>콘텐츠에 한 달 얼마 써요?</Text>
+            <Text style={styles.setupQuestionCopy}>고정 구독은 제외하고, 게임·영화·공연 같은 일회성 결제만.</Text>
+            <MoneyInput label="콘텐츠 월 평균" value={coachProfile.contentMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, contentMonthly: value }))} />
+          </View>
+        )
+      }
+
+      if (setupStep === 10) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <CoachQuestionCard
+              question="평소 돈 관리 스타일은?"
+              description="기타 예산 여유와 저축 기본 상태를 정해요."
+              options={[
+                { value: 'tight', label: '빡빡하게, 한 푼이라도 아끼는 편' },
+                { value: 'balanced', label: '적당히 균형' },
+                { value: 'loose', label: '넉넉하게 쓰는 편' },
+              ]}
+              value={coachProfile.moneyStyle}
+              onChange={value => {
+                const moneyStyle = value as BudgetCoachProfile['moneyStyle']
+                const nextProfile = { ...coachProfile, moneyStyle }
+                setCoachProfile(nextProfile)
+                patch({ savingEnabled: moneyStyle === 'tight', savingGoal: moneyStyle === 'tight' ? suggestSavingAmount(state, nextProfile) : 0 })
+              }}
+            />
+          </View>
+        )
+      }
+
+      if (setupStep === savingStep) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle}>저축도 챙길까요?</Text>
+            <Text style={styles.setupQuestionCopy}>지금은 안 챙겨도 돼요. 켜두면 매 구간 일정 금액을 먼저 떼두고 나머지로 하루한도를 잡아요.</Text>
+            <View style={styles.suggestionCard}>
+              <View style={styles.switchRow}>
+                <Text style={styles.suggestionTitle}>다음 입금일까지 떼어둘 저축액</Text>
+                <Switch
+                  value={state.savingEnabled}
+                  onValueChange={enabled => patch({ savingEnabled: enabled, savingGoal: enabled ? state.savingGoal || suggestSavingAmount(state, coachProfile) : 0 })}
+                  trackColor={{ false: colors.borderMd, true: colors.teal }}
+                  thumbColor={colors.surface}
+                  ios_backgroundColor={colors.borderMd}
                 />
               </View>
-              <View style={styles.setupDayField}>
-                <Text style={styles.miniLabel}>날짜 (일)</Text>
-                <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} />
-              </View>
-              <View style={styles.setupMoneyField}>
-                <Text style={styles.miniLabel}>금액</Text>
-                <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
-              </View>
-              <TouchableOpacity style={styles.setupRemoveButton} onPress={() => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+              {state.savingEnabled ? (
+                <MoneyInput label="다음 입금일까지 떼어둘 저축액" value={state.savingGoal || suggestSavingAmount(state, coachProfile)} onChange={value => patch({ savingGoal: value })} />
+              ) : (
+                <Text style={styles.suggestionCopy}>저축 OFF</Text>
+              )}
             </View>
-          ))}
-          <TouchableOpacity style={styles.secondaryButton} onPress={addFixed}>
-            <Text style={styles.secondaryButtonText}>고정 지출 추가</Text>
-          </TouchableOpacity>
-        </View>
+          </View>
+        )
+      }
 
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>5</Text>
-          <Text style={styles.sectionTitle}>생활 패턴을 골라주세요</Text>
-          <Text style={styles.helperText}>주말에 돈을 더 쓰는 편인지, 모든 날을 비슷하게 볼지만 고르면 됩니다.</Text>
-          <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
-        </View>
-
-        <View style={styles.questionCard}>
-          <Text style={styles.questionNumber}>6</Text>
-          <Text style={styles.sectionTitle}>이번 달 봉투예산을 정해볼까요?</Text>
-          <Text style={styles.helperText}>하루한도는 그대로 계산하고, 봉투는 어디에 얼마 남았는지 같이 보여줍니다.</Text>
+      return (
+        <View style={styles.setupSingleQuestion}>
+          <Text style={styles.setupQuestionTitle}>이렇게 시작할게요</Text>
+          <Text style={styles.setupQuestionCopy}>입력한 값으로 이번 구간을 만들고, 예산은 바로 수정할 수 있어요.</Text>
+          <View style={styles.suggestionCard}>
+            <BreakdownRow label="한 달 가용" value={money(monthlyBudgetPool)} tone="plus" />
+            <BreakdownRow label="이번 구간 예산 합" value={money(envelopeTotal)} tone="plus" />
+            {monthlyBudgets.기타 < 10000 && (
+              <Text style={styles.dangerText}>이 라이프엔 가용이 부족해요. 저축·데통 양보하거나 예산을 조정하세요.</Text>
+            )}
+            {monthlyBudgetTotal > monthlyBudgetPool && (
+              <Text style={styles.dangerText}>가용보다 {money(monthlyBudgetTotal - monthlyBudgetPool)} 초과. 다른 예산을 줄이거나 자동 차감을 조정하세요.</Text>
+            )}
+          </View>
+          <View style={styles.suggestionCard}>
+            <BreakdownRow label="현재 잔액" value={money(state.currentBalance)} />
+            <BreakdownRow label="다음 보충 시점" value={deriveModeLabel(state)} />
+            <BreakdownRow label="이번 구간 고정지출 합" value={money(fixedTotal)} />
+            <BreakdownRow label="자동 차감" value={`저축 ${state.savingEnabled ? money(state.savingGoal || suggestedSaving) : 'OFF'} / 데통 ${money(state.datePoolMonthly)} / 이벤트 ${money(state.eventReserveMonthly)}`} />
+            <View style={styles.breakdownDivider} />
+            <BreakdownRow label="6개 예산 합" value={money(envelopeTotal)} tone="plus" />
+          </View>
           {state.envelopes.map(envelope => (
             <View key={envelope.id} style={styles.setupEnvelopeRow}>
               <View style={styles.setupEnvelopeNameField}>
-                <Text style={styles.miniLabel}>봉투</Text>
+                <Text style={styles.miniLabel}>예산</Text>
                 <TextInput
                   style={styles.input}
                   value={envelope.name}
@@ -1080,23 +2085,75 @@ export default function App() {
                 />
               </View>
               <View style={styles.setupEnvelopeMoneyField}>
-                <Text style={styles.miniLabel}>월 한도</Text>
+                <Text style={styles.miniLabel}>구간 예산</Text>
                 <TextInput
                   style={styles.input}
-                  value={envelope.monthlyLimit ? envelope.monthlyLimit.toLocaleString('ko-KR') : ''}
+                  value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
                   keyboardType="numeric"
-                  onChangeText={amount => updateEnvelope(envelope.id, { monthlyLimit: numeric(amount) })}
+                  onChangeText={amount => updateSetupEnvelopeLimit(envelope.id, numeric(amount))}
                   placeholder="0"
                   placeholderTextColor={colors.subtle}
                 />
               </View>
+              <Text style={styles.emptyText}>월 환산 {money(monthlyBudgets[envelope.name])}</Text>
             </View>
           ))}
         </View>
+      )
+    }
 
-        <TouchableOpacity style={[styles.primaryButton, !canStartSetup && styles.primaryButtonMuted]} onPress={finishSetup}>
-          <Text style={styles.primaryButtonText}>계산 시작하기</Text>
-        </TouchableOpacity>
+    return (
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets={false}
+        style={styles.setupScreen}
+        contentContainerStyle={[styles.setupContent, keyboardVisible && styles.setupContentKeyboard]}
+      >
+        <View style={styles.setupMain}>
+          <View style={styles.setupIntro}>
+            <Text style={styles.setupIntroTitle}>처음엔 몇 가지만 물어볼게요</Text>
+            <Text style={styles.setupIntroCopy}>
+              수입일, 고정 지출, 평소 소비 리듬을 바탕으로{"\n"}오늘 얼마까지 써도 되는지 계산해드릴게요.
+            </Text>
+          </View>
+          <View style={styles.setupQuestionShell}>
+            <Text style={styles.setupProgress}>{Math.min(setupStep + 1, totalSetupSteps)} / {totalSetupSteps}</Text>
+            {renderSetupBody()}
+          </View>
+
+          <View style={styles.setupNavRow}>
+            {setupStep > 0 ? (
+              <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={goBack}>
+                <Text style={styles.secondaryButtonText}>이전</Text>
+              </TouchableOpacity>
+            ) : <View style={styles.setupNavButton} />}
+            {setupStep === resultStep && (
+              <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={() => jumpToSetupStep(6)}>
+                <Text style={styles.secondaryButtonText}>코치 다시풀기</Text>
+              </TouchableOpacity>
+            )}
+            {setupStep < resultStep ? (
+              <View style={[styles.setupNavButton, styles.setupNavSplit]}>
+                {setupStep >= 3 && setupStep <= savingStep && (
+                  <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={advanceSetup}>
+                    <Text style={styles.secondaryButtonText}>건너뛰기</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={[styles.setupPrimaryButton, styles.setupNavButton, setupStep === 0 && state.currentBalance <= 0 && styles.primaryButtonMuted]}
+                  onPress={goNext}
+                >
+                  <Text style={[styles.setupPrimaryButtonText, setupStep === 0 && state.currentBalance <= 0 && styles.primaryButtonMutedText]}>다음</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={[styles.setupPrimaryButton, styles.setupNavButton, !canStartSetup && styles.primaryButtonMuted]} onPress={finishSetup}>
+                <Text style={[styles.setupPrimaryButtonText, !canStartSetup && styles.primaryButtonMutedText]}>이대로 시작하기</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
       </ScrollView>
     )
   }
@@ -1105,12 +2162,35 @@ export default function App() {
     const todayRecords = recordsForDate(state, todayKey)
 
     return (
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+        {plan.overdue && state.incomes.length > 0 && !incomePromptDismissed && (
+          <View style={styles.incomePrompt}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.incomePromptTitle}>{state.incomes[0]?.name || '수입'} 입금 들어왔어요?</Text>
+              <Text style={styles.incomePromptCopy}>확정하면 지난 구간을 닫고 새 구간 예산을 다시 잡습니다.</Text>
+            </View>
+            <TouchableOpacity style={styles.incomePromptButton} onPress={openIncomeConfirm}>
+              <Text style={styles.incomePromptButtonText}>확정</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deleteButton} onPress={() => setIncomePromptDismissed(true)}>
+              <Text style={styles.removeText}>아직</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <View style={styles.hero}>
           <Text style={styles.eyebrow}>오늘</Text>
           <Text style={styles.heroTitle}>오늘 남은 돈</Text>
           <Text style={[styles.heroMoney, plan.todayRemaining < 0 && styles.dangerText]}>{money(plan.todayRemaining)}</Text>
           <Text style={styles.modePill}>{plan.modeLabel}</Text>
+          {plan.mode === 'income' && (
+            <Text style={styles.heroSub}>{plan.overdue ? '입금 확인 필요' : `다음 입금까지 D-${plan.daysUntilEnd}`}</Text>
+          )}
+          {plan.mode === 'targetDate' && (
+            <Text style={styles.heroSub}>목표일까지 D-{plan.daysUntilEnd}</Text>
+          )}
+          {plan.mode === 'openEnded' && plan.runwayDays !== null && (
+            <Text style={styles.heroSub}>이 페이스면 약 {plan.runwayDays}일</Text>
+          )}
         </View>
 
         <View style={styles.quickCard}>
@@ -1148,14 +2228,10 @@ export default function App() {
               </View>
             ))}
           </View>
-          <View style={styles.field}>
-            <Text style={styles.label}>어느 봉투에서 쓸까요?</Text>
-            <EnvelopePicker envelopes={state.envelopes} value={quickEnvelopeId} onChange={setQuickEnvelopeId} />
-          </View>
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, !numeric(quickAmount) && styles.primaryButtonMuted]}
             onPress={() => {
-              const saved = addExpense(todayKey, quickAmount, quickMemo, quickCategory, quickEnvelopeId)
+              const saved = addExpense(todayKey, quickAmount, quickMemo, quickCategory)
               if (!saved) return
               setQuickAmount('')
               setQuickMemo('')
@@ -1163,44 +2239,6 @@ export default function App() {
           >
             <Text style={styles.primaryButtonText}>오늘 지출 추가</Text>
           </TouchableOpacity>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>이번 달 봉투</Text>
-          <Text style={styles.helperText}>오늘 한도와 별개로, 용도별로 어디가 먼저 줄고 있는지 봅니다.</Text>
-          {envelopeStatuses.map(envelope => (
-            <View
-              key={envelope.id}
-              style={[
-                styles.envelopeStatusCard,
-                envelope.warning === 'watch' && styles.envelopeStatusWatch,
-                envelope.warning === 'over' && styles.envelopeStatusOver,
-              ]}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.envelopeStatusName}>{envelope.name}</Text>
-                <Text style={styles.envelopeStatusMeta}>
-                  {money(envelope.spent)} 사용 · {money(envelope.monthlyLimit)} 한도
-                </Text>
-              </View>
-              <View style={styles.envelopeStatusRight}>
-                <Text style={[
-                  styles.envelopeStatusRemaining,
-                  envelope.warning === 'over' && styles.dangerText,
-                ]}>
-                  {money(envelope.remaining)}
-                </Text>
-                {envelope.warning !== 'safe' && (
-                  <Text style={[
-                    styles.envelopeWarningText,
-                    envelope.warning === 'over' && styles.dangerText,
-                  ]}>
-                    {envelope.warning === 'over' ? '한도 초과' : '빠르게 줄고 있어요'}
-                  </Text>
-                )}
-              </View>
-            </View>
-          ))}
         </View>
 
         <View style={styles.section}>
@@ -1242,9 +2280,7 @@ export default function App() {
 
   function renderCalendar() {
     const totalDays = daysInMonth(calendarMonth)
-    const calendarPlan = sameMonth(calendarMonth, today)
-      ? plan
-      : calculatePlan(state, calendarMonth)
+    const calendarPlan = plan
     const slots = Array.from({ length: 42 }, (_, index) => {
       const day = index - startOffset(calendarMonth) + 1
       return day >= 1 && day <= totalDays ? day : null
@@ -1341,9 +2377,69 @@ export default function App() {
     )
   }
 
+  function renderEnvelopes() {
+    const totalLimit = envelopeStatuses.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
+
+    return (
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+        <View>
+          <Text style={styles.title}>예산</Text>
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.eyebrow}>이번 구간</Text>
+          <BreakdownRow label="총 예산" value={money(totalLimit)} tone="plus" />
+          <Text style={styles.emptyText}>구간 중엔 잠겨요. 옮기기로 조정하세요.</Text>
+        </View>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => setTransferOpen(true)}>
+          <Text style={styles.primaryButtonText}>예산끼리 금액 옮기기</Text>
+        </TouchableOpacity>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>이번 구간 예산</Text>
+          {envelopeStatuses.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>예산이 아직 없습니다.</Text>
+            </View>
+          ) : envelopeStatuses.map(envelope => (
+            <View
+              key={envelope.id}
+              style={[
+                styles.envelopeStatusCard,
+                envelope.warning === 'watch' && styles.envelopeStatusWatch,
+                envelope.warning === 'over' && styles.envelopeStatusOver,
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.envelopeStatusName}>{envelope.name}</Text>
+                <Text style={styles.envelopeStatusMeta}>
+                  {money(envelope.spent)} 사용 · {money(envelope.periodLimit)} 한도
+                </Text>
+              </View>
+              <View style={styles.envelopeStatusRight}>
+                <Text style={[
+                  styles.envelopeStatusRemaining,
+                  envelope.warning === 'over' && styles.dangerText,
+                ]}>
+                  {money(envelope.remaining)}
+                </Text>
+                {envelope.warning !== 'safe' && (
+                  <Text style={[
+                    styles.envelopeWarningText,
+                    envelope.warning === 'over' && styles.dangerText,
+                  ]}>
+                    {envelope.warning === 'over' ? '한도 초과' : '빠르게 줄고 있어요'}
+                  </Text>
+                )}
+              </View>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    )
+  }
+
   function renderSettings() {
     return (
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
         <View>
           <Text style={styles.title}>설정</Text>
           <View style={styles.autoSaveNotice}>
@@ -1375,22 +2471,86 @@ export default function App() {
             </View>
           )}
           {state.incomes.map(item => (
-            <View key={item.id} style={styles.editRow}>
-              <TextInput
-                style={[styles.input, { flex: 1 }]}
-                value={item.name}
-                onChangeText={name => updateIncome(item.id, { name })}
-                placeholder="수입 이름"
-                placeholderTextColor={colors.subtle}
-                selectTextOnFocus
-                autoCorrect={false}
-                spellCheck={false}
-              />
-              <DayInput value={item.day} onChange={day => updateIncome(item.id, { day })} />
-              <TextInput style={[styles.input, styles.moneySmall]} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateIncome(item.id, { amount: numeric(amount) })} />
-              <TouchableOpacity onPress={() => patch({ incomes: state.incomes.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+            <View key={item.id} style={styles.incomeSetupCard}>
+              <View style={styles.editRow}>
+                <TextInput
+                  style={[styles.input, { flex: 1 }]}
+                  value={item.name}
+                  onChangeText={name => updateIncome(item.id, { name })}
+                  placeholder="수입 이름"
+                  placeholderTextColor={colors.subtle}
+                  selectTextOnFocus
+                  autoCorrect={false}
+                  spellCheck={false}
+                />
+                <TextInput
+                  style={[styles.input, styles.moneySmall]}
+                  value={item.amount ? item.amount.toLocaleString('ko-KR') : ''}
+                  keyboardType="numeric"
+                  onChangeText={amount => updateIncome(item.id, { amount: amount.trim() ? numeric(amount) : null })}
+                  placeholder="미정"
+                  placeholderTextColor={colors.subtle}
+                />
+                <TouchableOpacity onPress={() => patch({ incomes: state.incomes.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+              </View>
+              <View style={styles.incomeTimingRow}>
+                <View style={styles.incomeCadenceChips}>
+                  {CADENCE_OPTIONS.map(option => (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
+                      onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
+                    >
+                      <Text style={[styles.chipText, item.cadence === option.key && styles.chipTextActive]}>{option.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {item.cadence === 'monthly' ? (
+                  <View style={styles.inlineDayField}>
+                    <Text style={styles.miniLabel}>매달 며칠?</Text>
+                    <DayInput value={incomeDay(item)} onChange={day => updateIncome(item.id, incomeWithDay(item, day, today))} />
+                  </View>
+                ) : (
+                  <View style={{ flex: 1 }}>
+                    <DateField label="기준 날짜" value={item.anchorDate} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })} />
+                  </View>
+                )}
+              </View>
+              {item.cadence === 'irregular' && (
+                <Field
+                  label="보통 며칠 간격"
+                  value={item.estIntervalDays ? `${item.estIntervalDays}` : ''}
+                  onChange={value => updateIncome(item.id, { estIntervalDays: numeric(value) || undefined })}
+                  keyboardType="numeric"
+                />
+              )}
             </View>
           ))}
+          {state.incomes.length === 0 && (
+            <View style={styles.setupSingleQuestion}>
+              <View style={styles.chipGrid}>
+                <View style={styles.chipSlot}>
+                  <TouchableOpacity
+                    style={[styles.chip, state.noIncomeMode === 'targetDate' && styles.chipActive]}
+                    onPress={() => patch({ noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })}
+                  >
+                    <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.chipTextActive]}>특정 날짜까지</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.chipSlot}>
+                  <TouchableOpacity
+                    style={[styles.chip, state.noIncomeMode === 'openEnded' && styles.chipActive]}
+                    onPress={() => patch({ noIncomeMode: 'openEnded' })}
+                  >
+                    <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.chipTextActive]}>정해진 날 없음</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              {state.noIncomeMode === 'targetDate' && (
+                <DateField label="목표 날짜" value={state.targetDate} onPress={() => setDatePickerTarget({ kind: 'targetDate' })} />
+              )}
+            </View>
+          )}
         </View>
 
         <View style={styles.section}>
@@ -1423,15 +2583,15 @@ export default function App() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>이번 달 봉투예산</Text>
-          <Text style={styles.helperText}>이름과 월 한도를 바꾸면 다음 지출부터 바로 반영됩니다.</Text>
+          <Text style={styles.sectionTitle}>이번 구간 예산</Text>
+          <Text style={styles.helperText}>구간 예산을 바꾸면 다음 지출부터 바로 반영됩니다.</Text>
           {state.envelopes.map(envelope => (
             <View key={envelope.id} style={styles.envelopeEditRow}>
               <TextInput
                 style={[styles.input, { flex: 1 }]}
                 value={envelope.name}
                 onChangeText={name => updateEnvelope(envelope.id, { name })}
-                placeholder="봉투 이름"
+                placeholder="예산 이름"
                 placeholderTextColor={colors.subtle}
                 selectTextOnFocus
                 autoCorrect={false}
@@ -1439,10 +2599,10 @@ export default function App() {
               />
               <TextInput
                 style={[styles.input, styles.moneySmall]}
-                value={envelope.monthlyLimit ? envelope.monthlyLimit.toLocaleString('ko-KR') : ''}
+                value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
                 keyboardType="numeric"
-                onChangeText={amount => updateEnvelope(envelope.id, { monthlyLimit: numeric(amount) })}
-                placeholder="월 한도"
+                onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
+                placeholder="구간 예산"
                 placeholderTextColor={colors.subtle}
               />
             </View>
@@ -1461,13 +2621,13 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={[styles.safe, loaded && !state.setupComplete && styles.setupSafe]}>
         <StatusBar style="dark" />
 
         <KeyboardAvoidingView
-          style={styles.body}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={8}
+          style={[styles.body, loaded && !state.setupComplete && styles.setupSafe]}
+          behavior={Platform.OS === 'ios' ? loaded && !state.setupComplete ? 'height' : 'padding' : undefined}
+          keyboardVerticalOffset={loaded && !state.setupComplete ? 0 : 8}
         >
           {!loaded && (
             <View style={styles.loading}>
@@ -1477,6 +2637,7 @@ export default function App() {
           {loaded && !state.setupComplete && renderSetup()}
           {loaded && state.setupComplete && tab === 'home' && renderHome()}
           {loaded && state.setupComplete && tab === 'calendar' && renderCalendar()}
+          {loaded && state.setupComplete && tab === 'envelopes' && renderEnvelopes()}
           {loaded && state.setupComplete && tab === 'settings' && renderSettings()}
         </KeyboardAvoidingView>
 
@@ -1485,6 +2646,7 @@ export default function App() {
             {([
               ['home', '홈'],
               ['calendar', '캘린더'],
+              ['envelopes', '예산'],
               ['settings', '설정'],
             ] as [Tab, string][]).map(([key, label]) => (
               <TouchableOpacity key={key} style={styles.tabButton} onPress={() => setTab(key)}>
@@ -1567,12 +2729,8 @@ export default function App() {
                   </View>
                 ))}
               </View>
-              <View style={styles.field}>
-                <Text style={styles.label}>어느 봉투에서 쓸까요?</Text>
-                <EnvelopePicker envelopes={state.envelopes} value={modalEnvelopeId} onChange={setModalEnvelopeId} />
-              </View>
               <TouchableOpacity
-                style={styles.primaryButton}
+                style={[styles.primaryButton, !numeric(modalAmount) && styles.primaryButtonMuted]}
                 onPress={saveModalExpense}
               >
                 <Text style={styles.primaryButtonText}>{editingExpenseId ? '수정 완료' : '이 날짜에 추가'}</Text>
@@ -1612,6 +2770,133 @@ export default function App() {
           </KeyboardAvoidingView>
           </View>
         </Modal>
+        <Modal visible={incomeConfirmOpen} animationType="none" transparent onRequestClose={closeIncomeConfirm}>
+          <View style={styles.modalRoot}>
+            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeIncomeConfirm} />
+            <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
+              <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+                <View style={styles.modalTop}>
+                  <View>
+                    <Text style={styles.eyebrow}>Income check</Text>
+                    <Text style={styles.modalTitle}>입금 포함 지금 잔액</Text>
+                  </View>
+                  <TouchableOpacity onPress={closeIncomeConfirm}>
+                    <Text style={styles.addText}>닫기</Text>
+                  </TouchableOpacity>
+                </View>
+                <MoneyInput label="지금 잔액" value={incomeConfirmBalance} onChange={setIncomeConfirmBalance} />
+                <TouchableOpacity style={styles.primaryButton} onPress={confirmIncomeBalance}>
+                  <Text style={styles.primaryButtonText}>입금 확정</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </View>
+        </Modal>
+        <Modal visible={transferOpen} animationType="none" transparent onRequestClose={closeTransferModal}>
+          <View style={styles.modalRoot}>
+            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeTransferModal} />
+            <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
+              <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+                <View style={styles.modalTop}>
+                  <View>
+                    <Text style={styles.eyebrow}>예산 이동</Text>
+                    <Text style={styles.modalTitle}>예산 간 옮기기</Text>
+                  </View>
+                  <TouchableOpacity onPress={closeTransferModal}>
+                    <Text style={styles.addText}>닫기</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.label}>보낼 예산</Text>
+                <View style={styles.chipGrid}>
+                  {CATEGORIES.map(category => (
+                    <View key={category} style={styles.chipSlot}>
+                      <TouchableOpacity style={[styles.chip, transferFrom === category && styles.chipActive]} onPress={() => setTransferFrom(category)}>
+                        <Text style={[styles.chipText, transferFrom === category && styles.chipTextActive]}>{category}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+                <Text style={styles.label}>받을 예산</Text>
+                <View style={styles.chipGrid}>
+                  {CATEGORIES.map(category => (
+                    <View key={category} style={styles.chipSlot}>
+                      <TouchableOpacity style={[styles.chip, transferTo === category && styles.chipActive]} onPress={() => setTransferTo(category)}>
+                        <Text style={[styles.chipText, transferTo === category && styles.chipTextActive]}>{category}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+                <MoneyInput label="옮길 금액" value={transferAmount} onChange={setTransferAmount} />
+                <TouchableOpacity style={[styles.primaryButton, (!transferAmount || transferFrom === transferTo) && styles.primaryButtonMuted]} onPress={submitEnvelopeTransfer}>
+                  <Text style={styles.primaryButtonText}>옮기기</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </View>
+        </Modal>
+        <Modal visible={!!reportSnapshot} animationType="none" transparent onRequestClose={closeReportModal}>
+          <View style={styles.modalRoot}>
+            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeReportModal} />
+            <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
+              <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+                <View style={styles.modalTop}>
+                  <View>
+                    <Text style={styles.eyebrow}>Period report</Text>
+                    <Text style={styles.modalTitle}>지난 구간 정리</Text>
+                  </View>
+                  <TouchableOpacity onPress={closeReportModal}>
+                    <Text style={styles.addText}>닫기</Text>
+                  </TouchableOpacity>
+                </View>
+                {reportSnapshot && (
+                  <>
+                    <Text style={styles.helperText}>{reportSnapshot.startDate} ~ {reportSnapshot.endDate}</Text>
+                    {CATEGORIES.map(category => {
+                      const planned = reportSnapshot.envelopePlan.find(item => item.category === category)?.limit ?? 0
+                      const actual = reportSnapshot.actualByCategory.find(item => item.category === category)?.amount ?? 0
+                      return (
+                        <BreakdownRow
+                          key={category}
+                          label={category}
+                          value={`계획 ${money(planned)} · 실제 ${money(actual)}`}
+                          tone={actual > planned ? 'minus' : 'plus'}
+                        />
+                      )
+                    })}
+                    <Text style={styles.sectionTitle}>다음 구간 예산</Text>
+                    {state.envelopes.map(envelope => (
+                      <View key={envelope.id} style={styles.envelopeEditRow}>
+                        <Text style={[styles.envelopeStatusName, { flex: 1 }]}>{envelope.name}</Text>
+                        <TextInput
+                          style={[styles.input, styles.moneySmall]}
+                          value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
+                          keyboardType="numeric"
+                          onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
+                          placeholder="0"
+                          placeholderTextColor={colors.subtle}
+                        />
+                      </View>
+                    ))}
+                  </>
+                )}
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </View>
+        </Modal>
+        {datePickerTarget && (
+          <DateTimePicker
+            value={datePickerTarget.kind === 'income'
+              ? parseIso(state.incomes.find(item => item.id === datePickerTarget.id)?.anchorDate ?? todayKey)
+              : parseIso(state.targetDate ?? isoDate(addDays(today, 30)))}
+            mode="date"
+            display={Platform.OS === 'ios' ? 'compact' : 'default'}
+            onChange={(_, selectedDateValue) => {
+              if (Platform.OS !== 'ios' || selectedDateValue) {
+                handleDatePicked(selectedDateValue)
+              }
+            }}
+          />
+        )}
       </SafeAreaView>
     </SafeAreaProvider>
   )
@@ -1619,6 +2904,7 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
+  setupSafe: { backgroundColor: colors.bg },
   header: {
     paddingHorizontal: 20,
     paddingVertical: 12,
@@ -1631,15 +2917,44 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   content: { padding: 14, gap: 12, paddingBottom: 28 },
-  setupContent: { paddingBottom: 48 },
+  setupScreen: { flex: 1, backgroundColor: colors.bg },
+  setupContent: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 28, paddingBottom: 16 },
+  setupContentKeyboard: { paddingBottom: 28 },
   calendarScreen: { flex: 1, paddingHorizontal: 10, paddingTop: 16, paddingBottom: 8 },
   setupHero: {
-    backgroundColor: colors.text,
+    backgroundColor: colors.surface,
     borderRadius: 8,
     padding: 18,
   },
-  setupTitle: { marginTop: 10, color: '#FFFFFF', fontSize: 26, fontWeight: '900' },
-  setupCopy: { marginTop: 8, color: '#CBD5E1', fontSize: 14, lineHeight: 20, fontWeight: '700' },
+  setupTitle: { marginTop: 10, color: colors.text, fontSize: 26, fontWeight: '900' },
+  setupCopy: { marginTop: 8, color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '700' },
+  setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingBottom: 28 },
+  setupIntro: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    padding: 14,
+    backgroundColor: colors.surface,
+    gap: 6,
+  },
+  setupIntroTitle: { color: colors.teal, fontSize: 12, fontWeight: '900' },
+  setupIntroCopy: { color: colors.muted, fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  setupQuestionShell: { gap: 18 },
+  setupProgress: { alignSelf: 'flex-start', color: colors.muted, backgroundColor: colors.surface, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, fontSize: 13, fontWeight: '900' },
+  setupSingleQuestion: { gap: 12 },
+  setupQuestionTitle: { color: colors.text, fontSize: 28, lineHeight: 36, fontWeight: '900' },
+  setupQuestionCopy: { color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '700' },
+  setupExampleText: { color: colors.subtle, fontSize: 13, lineHeight: 19, fontWeight: '800' },
+  setupNavRow: { flexDirection: 'row', gap: 10 },
+  setupNavButton: { flex: 1 },
+  setupNavSplit: { flexDirection: 'row', gap: 8 },
+  setupPrimaryButton: {
+    borderRadius: 12,
+    alignItems: 'center',
+    paddingVertical: 13,
+    backgroundColor: colors.teal,
+  },
+  setupPrimaryButtonText: { color: colors.surface, fontSize: 14, fontWeight: '900' },
   questionCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -1687,6 +3002,20 @@ const styles = StyleSheet.create({
   },
   dangerText: { color: colors.danger },
   heroSub: { marginTop: 6, fontSize: 13, color: colors.muted, fontWeight: '700' },
+  incomePrompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: colors.warningBg,
+  },
+  incomePromptTitle: { color: colors.text, fontSize: 14, fontWeight: '900' },
+  incomePromptCopy: { marginTop: 3, color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  incomePromptButton: { borderRadius: 8, backgroundColor: colors.text, paddingHorizontal: 12, paddingVertical: 9 },
+  incomePromptButtonText: { color: colors.surface, fontSize: 12, fontWeight: '900' },
   quickCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -1713,7 +3042,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     gap: 7,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.bg,
   },
   breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   breakdownLabel: { flex: 1, color: colors.muted, fontSize: 12, fontWeight: '800' },
@@ -1736,6 +3065,16 @@ const styles = StyleSheet.create({
   },
   field: { gap: 6 },
   label: { fontSize: 13, color: colors.muted, fontWeight: '800' },
+  dateButton: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  dateButtonText: { color: colors.text, fontSize: 14, fontWeight: '800' },
   chipGrid: {
     flexDirection: 'row',
     width: '100%',
@@ -1752,23 +3091,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 1,
     paddingVertical: 7,
     alignItems: 'center',
-    backgroundColor: colors.surface,
+    backgroundColor: colors.tealLight,
   },
-  chipActive: { backgroundColor: colors.tealLight, borderColor: colors.teal },
-  chipText: { fontSize: 12, color: colors.muted, fontWeight: '800' },
-  chipTextActive: { color: colors.tealDark },
-  envelopeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  envelopeChip: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 999,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    backgroundColor: colors.surface,
-  },
-  envelopeChipActive: { borderColor: colors.teal, backgroundColor: colors.tealLight },
-  envelopeChipText: { color: colors.muted, fontSize: 12, fontWeight: '900' },
-  envelopeChipTextActive: { color: colors.tealDark },
+  chipActive: { backgroundColor: colors.teal, borderColor: colors.teal },
+  chipText: { fontSize: 12, color: colors.tealDark, fontWeight: '800' },
+  chipTextActive: { color: colors.surface },
   lifestyleOption: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1791,7 +3118,8 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
   },
   primaryButtonMuted: { backgroundColor: colors.muted },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  primaryButtonMutedText: { color: colors.subtle },
+  primaryButtonText: { color: colors.surface, fontSize: 14, fontWeight: '900' },
   secondaryButton: {
     borderWidth: 1,
     borderColor: colors.borderMd,
@@ -1800,7 +3128,47 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: colors.surface,
   },
+  secondaryButtonMuted: { opacity: 0.45 },
   secondaryButtonText: { color: colors.text, fontSize: 13, fontWeight: '900' },
+  backButton: { alignSelf: 'flex-start', paddingHorizontal: 2, paddingVertical: 4 },
+  backButtonText: { color: colors.muted, fontSize: 12, fontWeight: '900' },
+  coachProgress: { color: colors.muted, fontSize: 12, fontWeight: '900' },
+  suggestionCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    padding: 12,
+    gap: 9,
+    backgroundColor: colors.surface,
+  },
+  suggestionTitle: { color: colors.muted, fontSize: 12, fontWeight: '900' },
+  suggestionMoney: { color: colors.text, fontSize: 24, fontWeight: '900' },
+  suggestionCopy: { color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  resultEditRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  coachQuestionCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    padding: 14,
+    gap: 9,
+  },
+  coachEyebrow: { color: colors.subtle, fontSize: 11, fontWeight: '900' },
+  coachQuestion: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  coachDescription: { color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  coachOptionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  coachOption: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+  },
+  coachOptionActive: { borderColor: colors.teal, backgroundColor: colors.teal },
+  coachOptionText: { color: colors.text, fontSize: 12, fontWeight: '900' },
+  coachOptionTextActive: { color: colors.surface },
   envelopeStatusCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1813,7 +3181,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   envelopeStatusWatch: {
-    borderColor: '#FDE68A',
+    borderColor: colors.warning,
     backgroundColor: colors.warningBg,
   },
   envelopeStatusOver: {
@@ -1825,20 +3193,6 @@ const styles = StyleSheet.create({
   envelopeStatusRight: { alignItems: 'flex-end' },
   envelopeStatusRemaining: { color: colors.text, fontSize: 15, fontWeight: '900' },
   envelopeWarningText: { marginTop: 3, color: colors.warning, fontSize: 11, fontWeight: '900' },
-  metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  metric: {
-    width: '48.8%',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    padding: 12,
-  },
-  metricGood: { backgroundColor: colors.successBg, borderColor: '#BBF7D0' },
-  metricWarn: { backgroundColor: colors.warningBg, borderColor: '#FDE68A' },
-  metricBad: { backgroundColor: colors.dangerBg, borderColor: '#FECACA' },
-  metricLabel: { fontSize: 11, color: colors.muted, fontWeight: '900' },
-  metricValue: { marginTop: 6, fontSize: 17, color: colors.text, fontWeight: '900' },
   expenseRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1855,17 +3209,6 @@ const styles = StyleSheet.create({
   deleteButton: { paddingHorizontal: 8, paddingVertical: 6 },
   editText: { fontSize: 12, color: colors.tealDark, fontWeight: '900' },
   deleteText: { fontSize: 12, color: colors.danger, fontWeight: '900' },
-  inlinePill: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    color: colors.tealDark,
-    backgroundColor: colors.tealLight,
-    fontSize: 12,
-    fontWeight: '900',
-  },
   overText: { color: colors.danger },
   underText: { color: colors.success },
   noteInput: {
@@ -1873,29 +3216,13 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     lineHeight: 20,
   },
-  weekBudgetRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    padding: 12,
-    backgroundColor: colors.surface,
-  },
-  weekBudgetDate: { fontSize: 14, fontWeight: '900', color: colors.text },
-  weekBudgetSub: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
-  weekBudgetRight: { alignItems: 'flex-end' },
-  weekBudgetLabel: { fontSize: 11, fontWeight: '900', color: colors.subtle },
-  weekBudgetMoney: { marginTop: 2, fontSize: 15, fontWeight: '900', color: colors.text },
   emptyBox: {
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 10,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.bg,
   },
   emptyText: { color: colors.subtle, fontSize: 13, lineHeight: 18, fontWeight: '700' },
   calendarHeader: {
@@ -1938,7 +3265,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     backgroundColor: colors.text,
   },
-  todayButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  todayButtonText: { color: colors.surface, fontSize: 12, fontWeight: '900' },
   note: { marginTop: 6, color: colors.muted, fontSize: 13, fontWeight: '800' },
   weekRow: { flexDirection: 'row', paddingBottom: 12 },
   weekLabel: { flex: 1, textAlign: 'center', color: colors.muted, fontSize: 13, fontWeight: '800' },
@@ -1956,7 +3283,7 @@ const styles = StyleSheet.create({
   legendUnder: { backgroundColor: colors.underBorder },
   legendOver: { backgroundColor: colors.overBorder },
   legendToday: { width: 12, height: 12, borderRadius: 999, backgroundColor: colors.text },
-  legendFixed: { width: 16, height: 8, borderRadius: 999, backgroundColor: colors.warningBg, borderWidth: 1, borderColor: '#FDE68A' },
+  legendFixed: { width: 16, height: 8, borderRadius: 999, backgroundColor: colors.warningBg, borderWidth: 1, borderColor: colors.warning },
   legendText: { color: colors.muted, fontSize: 11, fontWeight: '800' },
   calendarGrid: {
     flex: 1,
@@ -1973,7 +3300,7 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderBottomWidth: 1,
     borderColor: colors.border,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.bg,
   },
   dayCell: {
     width: `${100 / 7}%`,
@@ -1997,7 +3324,7 @@ const styles = StyleSheet.create({
   },
   dayNumberBadgeToday: { backgroundColor: colors.text },
   dayNumber: { fontSize: 13, color: colors.subtle, fontWeight: '800' },
-  dayNumberToday: { color: '#FFFFFF', fontWeight: '900' },
+  dayNumberToday: { color: colors.surface, fontWeight: '900' },
   dayMoney: {
     alignSelf: 'center',
     minWidth: 42,
@@ -2029,7 +3356,7 @@ const styles = StyleSheet.create({
   fixedBadgeCount: { color: colors.warning, fontSize: 9, fontWeight: '900' },
   fixedList: {
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: colors.warning,
     borderRadius: 8,
     backgroundColor: colors.warningBg,
     padding: 10,
@@ -2068,13 +3395,40 @@ const styles = StyleSheet.create({
   setupEnvelopeRow: { flexDirection: 'row', gap: 7, alignItems: 'flex-end' },
   setupEnvelopeNameField: { flex: 1, gap: 5 },
   setupEnvelopeMoneyField: { width: 112, gap: 5 },
+  incomeSetupCard: {
+    gap: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: colors.surface,
+  },
+  incomeTimingRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
+  incomeCadenceChips: { flex: 1, flexDirection: 'row', gap: 4 },
+  incomeCadenceChip: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
+    backgroundColor: colors.tealLight,
+  },
+  inlineDayField: { width: 92, gap: 5 },
+  setupEditHeader: { flexDirection: 'row', gap: 7, alignItems: 'center' },
+  setupIncomeHeaderNameField: { width: 88, textAlign: 'center' },
+  setupHeaderNameField: { flex: 1, textAlign: 'center' },
+  setupHeaderDayField: { width: 58, textAlign: 'center' },
+  setupHeaderMoneyField: { width: 104, textAlign: 'center' },
   setupEditRow: { flexDirection: 'row', gap: 7, alignItems: 'flex-end' },
+  setupIncomeNameField: { width: 88, gap: 5 },
   setupNameField: { flex: 1, gap: 5 },
   setupDayField: { width: 58, gap: 5 },
   setupMoneyField: { width: 104, gap: 5 },
   setupRemoveButton: { paddingBottom: 12, paddingLeft: 1 },
   miniLabel: { color: colors.muted, fontSize: 11, fontWeight: '900' },
-  dayInput: { width: 48, textAlign: 'center' },
+  dayInput: { width: 48, height: 44, paddingVertical: 0, textAlign: 'center' },
   moneySmall: { width: 112 },
   modalRoot: {
     flex: 1,
