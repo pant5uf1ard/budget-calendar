@@ -4,6 +4,24 @@ import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Home as IconHome,
+  Calendar as IconCalendar,
+  Wallet as IconWallet,
+  Settings as IconSettings,
+  Utensils as IconFood,
+  ShoppingBag as IconShopping,
+  Bus as IconTransit,
+  Sparkles as IconCulture,
+  Sofa as IconLiving,
+  MoreHorizontal as IconOther,
+  ChevronLeft as IconChevronLeft,
+  ChevronRight as IconChevronRight,
+  X as IconClose,
+  Check as IconCheck,
+  Pencil as IconEdit,
+  Trash2 as IconTrash,
+} from 'lucide-react-native'
+import {
   Alert,
   AppState,
   Keyboard,
@@ -113,6 +131,22 @@ type BudgetState = {
 
 const STORAGE_KEY = 'budget-calendar-mobile-v1'
 const CATEGORIES: Category[] = ['식비', '생활', '교통', '쇼핑', '문화', '기타']
+
+const CATEGORY_ICONS: Record<Category, typeof IconFood> = {
+  식비: IconFood,
+  생활: IconLiving,
+  교통: IconTransit,
+  쇼핑: IconShopping,
+  문화: IconCulture,
+  기타: IconOther,
+}
+
+const TAB_ICONS: Record<Tab, typeof IconHome> = {
+  home: IconHome,
+  calendar: IconCalendar,
+  envelopes: IconWallet,
+  settings: IconSettings,
+}
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
 const LIFESTYLE_OPTIONS: { key: LifestyleType; title: string; description: string; weekdayWeight: number; weekendWeight: number }[] = [
   { key: 'balanced', title: '균등형', description: '요일 상관없이 비슷하게 써요', weekdayWeight: 1, weekendWeight: 1 },
@@ -245,6 +279,13 @@ function numeric(value: string) {
 function formatMoneyText(value: string) {
   const digits = value.replace(/[^\d]/g, '')
   return digits ? Number(digits).toLocaleString('ko-KR') : ''
+}
+
+function confirmDestructive(title: string, message: string, onConfirm: () => void) {
+  Alert.alert(title, message, [
+    { text: '취소', style: 'cancel' },
+    { text: '삭제', style: 'destructive', onPress: onConfirm },
+  ])
 }
 
 function normalizeCategory(category: unknown): Category {
@@ -1179,12 +1220,22 @@ function ExpenseRow({ item, onEdit, onDelete }: { item: ExpenseRecord; onEdit?: 
       </View>
       <Text style={styles.expenseAmount}>{money(item.amount)}</Text>
       {onEdit && (
-        <TouchableOpacity style={styles.deleteButton} onPress={onEdit}>
-          <Text style={styles.editText}>수정</Text>
+        <TouchableOpacity
+          style={styles.deleteButton}
+          onPress={onEdit}
+          accessibilityRole="button"
+          accessibilityLabel={`${money(item.amount)} 지출 수정`}
+        >
+          <IconEdit size={18} color={colors.muted} strokeWidth={2} />
         </TouchableOpacity>
       )}
-      <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
-        <Text style={styles.deleteText}>삭제</Text>
+      <TouchableOpacity
+        style={styles.deleteButton}
+        onPress={onDelete}
+        accessibilityRole="button"
+        accessibilityLabel={`${money(item.amount)} 지출 삭제`}
+      >
+        <IconTrash size={18} color={colors.danger} strokeWidth={2} />
       </TouchableOpacity>
     </View>
   )
@@ -1673,7 +1724,12 @@ export default function App() {
                 placeholderTextColor={colors.subtle}
               />
             </View>
-            <TouchableOpacity style={styles.setupRemoveButton} onPress={() => patch({ incomes: state.incomes.filter(row => row.id !== item.id) })}>
+            <TouchableOpacity
+              style={styles.setupRemoveButton}
+              onPress={() => confirmDestructive('수입 삭제', `${item.name || '이 수입'}을(를) 삭제할까요?`, () => patch({ incomes: state.incomes.filter(row => row.id !== item.id) }))}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.name || '수입'} 삭제`}
+            >
               <Text style={styles.removeText}>삭제</Text>
             </TouchableOpacity>
           </View>
@@ -1872,7 +1928,12 @@ export default function App() {
                   <Text style={styles.miniLabel}>금액</Text>
                   <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
                 </View>
-                <TouchableOpacity style={styles.setupRemoveButton} onPress={() => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.setupRemoveButton}
+                  onPress={() => confirmDestructive('고정 지출 삭제', `${item.name || '이 항목'}을(를) 삭제할까요?`, () => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) }))}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name || '고정 지출'} 삭제`}
+                ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
               </View>
             ))}
             <TouchableOpacity style={styles.secondaryButton} onPress={addFixed}>
@@ -2172,8 +2233,13 @@ export default function App() {
             <TouchableOpacity style={styles.incomePromptButton} onPress={openIncomeConfirm}>
               <Text style={styles.incomePromptButtonText}>확정</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.deleteButton} onPress={() => setIncomePromptDismissed(true)}>
-              <Text style={styles.removeText}>아직</Text>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => setIncomePromptDismissed(true)}
+              accessibilityRole="button"
+              accessibilityLabel="입금 확인 미루기"
+            >
+              <Text style={styles.removeText}>나중에</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2196,37 +2262,53 @@ export default function App() {
         <View style={styles.quickCard}>
           <Text style={styles.sectionTitle}>지출 빠른 입력</Text>
           <View style={styles.quickRow}>
-            <TextInput
-              style={[styles.input, styles.quickAmount]}
-              value={quickAmount}
-              onChangeText={text => setQuickAmount(formatMoneyText(text))}
-              placeholder="금액"
-              keyboardType="numeric"
-              autoCorrect={false}
-              spellCheck={false}
-              placeholderTextColor={colors.subtle}
-            />
-            <TextInput
-              style={[styles.input, { flex: 1 }]}
-              value={quickMemo}
-              onChangeText={setQuickMemo}
-              placeholder="메모 예: 점심"
-              autoCorrect={false}
-              spellCheck={false}
-              placeholderTextColor={colors.subtle}
-            />
+            <View style={styles.quickField}>
+              <Text style={styles.fieldLabel}>금액</Text>
+              <TextInput
+                style={[styles.input, styles.quickAmount]}
+                value={quickAmount}
+                onChangeText={text => setQuickAmount(formatMoneyText(text))}
+                placeholder="0"
+                keyboardType="numeric"
+                autoCorrect={false}
+                spellCheck={false}
+                placeholderTextColor={colors.subtle}
+                accessibilityLabel="지출 금액"
+              />
+            </View>
+            <View style={[styles.quickField, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>메모</Text>
+              <TextInput
+                style={styles.input}
+                value={quickMemo}
+                onChangeText={setQuickMemo}
+                placeholder="예: 점심"
+                autoCorrect={false}
+                spellCheck={false}
+                placeholderTextColor={colors.subtle}
+                accessibilityLabel="지출 메모"
+              />
+            </View>
           </View>
           <View style={styles.chipGrid}>
-            {CATEGORIES.map(category => (
-              <View key={category} style={styles.chipSlot}>
-                <TouchableOpacity
-                  style={[styles.chip, quickCategory === category && styles.chipActive]}
-                  onPress={() => setQuickCategory(category)}
-                >
-                  <Text style={[styles.chipText, quickCategory === category && styles.chipTextActive]}>{category}</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
+            {CATEGORIES.map(category => {
+              const Icon = CATEGORY_ICONS[category]
+              const active = quickCategory === category
+              return (
+                <View key={category} style={styles.chipSlot}>
+                  <TouchableOpacity
+                    style={[styles.chip, active && styles.chipActive]}
+                    onPress={() => setQuickCategory(category)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${category} 카테고리`}
+                  >
+                    <Icon size={14} color={active ? colors.surface : colors.muted} strokeWidth={2.2} />
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{category}</Text>
+                  </TouchableOpacity>
+                </View>
+              )
+            })}
           </View>
           <TouchableOpacity
             style={[styles.primaryButton, !numeric(quickAmount) && styles.primaryButtonMuted]}
@@ -2255,7 +2337,7 @@ export default function App() {
                 setSelectedDate(item.date)
                 startEditingExpense(item)
               }}
-              onDelete={() => deleteExpense(item.id)}
+              onDelete={() => confirmDestructive('지출 삭제', `${money(item.amount)} 기록을 삭제할까요?`, () => deleteExpense(item.id))}
             />
           ))}
         </View>
@@ -2268,6 +2350,7 @@ export default function App() {
             onChangeText={note => updateDailyNote(todayKey, note)}
             placeholder="예: 저녁 약속 있음"
             placeholderTextColor={colors.subtle}
+            accessibilityLabel="오늘 메모"
             autoCorrect={false}
             spellCheck={false}
             multiline
@@ -2294,14 +2377,29 @@ export default function App() {
             <Text style={styles.title}>{calendarMonth.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' })}</Text>
           </View>
           <View style={styles.monthControls}>
-            <TouchableOpacity style={styles.monthButton} onPress={() => setCalendarMonth(prev => addMonths(prev, -1))}>
-              <Text style={styles.monthButtonText}>‹</Text>
+            <TouchableOpacity
+              style={styles.monthButton}
+              onPress={() => setCalendarMonth(prev => addMonths(prev, -1))}
+              accessibilityRole="button"
+              accessibilityLabel="이전 달"
+            >
+              <IconChevronLeft size={22} color={colors.text} strokeWidth={2.5} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.todayButton} onPress={() => setCalendarMonth(startOfMonth(today))}>
+            <TouchableOpacity
+              style={styles.todayButton}
+              onPress={() => setCalendarMonth(startOfMonth(today))}
+              accessibilityRole="button"
+              accessibilityLabel="이번 달로 이동"
+            >
               <Text style={styles.todayButtonText}>오늘</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.monthButton} onPress={() => setCalendarMonth(prev => addMonths(prev, 1))}>
-              <Text style={styles.monthButtonText}>›</Text>
+            <TouchableOpacity
+              style={styles.monthButton}
+              onPress={() => setCalendarMonth(prev => addMonths(prev, 1))}
+              accessibilityRole="button"
+              accessibilityLabel="다음 달"
+            >
+              <IconChevronRight size={22} color={colors.text} strokeWidth={2.5} />
             </TouchableOpacity>
           </View>
         </View>
@@ -2344,23 +2442,29 @@ export default function App() {
                   tone === 'under' && styles.dayUnder,
                 ]}
                 onPress={() => setSelectedDate(dateKey)}
+                accessibilityRole="button"
+                accessibilityLabel={`${day}일${isToday ? ', 오늘' : ''}${total > 0 ? `, 지출 ${money(total)}` : ''}${tone === 'over' ? ', 한도 초과' : ''}${hasNoSpend ? ', 무지출 체크' : ''}`}
               >
                 <View style={[styles.dayNumberBadge, isToday && styles.dayNumberBadgeToday]}>
                   <Text style={[styles.dayNumber, isToday && styles.dayNumberToday]}>{day}</Text>
                 </View>
-                <Text
-                  style={[
-                    styles.dayMoney,
-                    total > 0 ? styles.daySpentMoney : styles.dayBudgetMoney,
-                    tone === 'over' && styles.overText,
-                    tone === 'under' && styles.underText,
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.9}
-                >
-                  {calendarValue}
-                </Text>
+                <View style={styles.dayMoneyRow}>
+                  {tone === 'over' && <Text style={[styles.dayToneGlyph, styles.overText]}>▲</Text>}
+                  {tone === 'under' && total > 0 && <Text style={[styles.dayToneGlyph, styles.underText]}>▼</Text>}
+                  <Text
+                    style={[
+                      styles.dayMoney,
+                      total > 0 ? styles.daySpentMoney : styles.dayBudgetMoney,
+                      tone === 'over' && styles.overText,
+                      tone === 'under' && styles.underText,
+                    ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.9}
+                  >
+                    {calendarValue}
+                  </Text>
+                </View>
                 {fixedDue.length > 0 && (
                   <View style={styles.fixedBadge}>
                     <Text style={styles.fixedBadgeText} numberOfLines={1}>{shortFixedLabel(fixedDue[0].name)}</Text>
@@ -2491,7 +2595,12 @@ export default function App() {
                   placeholder="미정"
                   placeholderTextColor={colors.subtle}
                 />
-                <TouchableOpacity onPress={() => patch({ incomes: state.incomes.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.deleteButton}
+                  onPress={() => confirmDestructive('수입 삭제', `${item.name || '이 수입'}을(를) 삭제할까요?`, () => patch({ incomes: state.incomes.filter(row => row.id !== item.id) }))}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name || '수입'} 삭제`}
+                ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
               </View>
               <View style={styles.incomeTimingRow}>
                 <View style={styles.incomeCadenceChips}>
@@ -2577,7 +2686,12 @@ export default function App() {
               />
               <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} />
               <TextInput style={[styles.input, styles.moneySmall]} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
-              <TouchableOpacity onPress={() => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) })}><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+              <TouchableOpacity
+                style={styles.deleteButton}
+                onPress={() => confirmDestructive('고정 지출 삭제', `${item.name || '이 항목'}을(를) 삭제할까요?`, () => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) }))}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.name || '고정 지출'} 삭제`}
+              ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
             </View>
           ))}
         </View>
@@ -2649,7 +2763,25 @@ export default function App() {
               ['envelopes', '예산'],
               ['settings', '설정'],
             ] as [Tab, string][]).map(([key, label]) => (
-              <TouchableOpacity key={key} style={styles.tabButton} onPress={() => setTab(key)}>
+              <TouchableOpacity
+                key={key}
+                style={styles.tabButton}
+                onPress={() => setTab(key)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: tab === key }}
+                accessibilityLabel={`${label} 탭`}
+              >
+                {(() => {
+                  const Icon = TAB_ICONS[key]
+                  const active = tab === key
+                  return (
+                    <Icon
+                      size={22}
+                      color={active ? colors.tealDark : colors.muted}
+                      strokeWidth={active ? 2.5 : 2}
+                    />
+                  )
+                })()}
                 <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
               </TouchableOpacity>
             ))}
@@ -2658,7 +2790,7 @@ export default function App() {
 
         <Modal visible={!!selectedDate} animationType="none" transparent onRequestClose={closeExpenseModal}>
           <View style={styles.modalRoot}>
-            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeExpenseModal} />
+            <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeExpenseModal} accessibilityElementsHidden accessibilityRole="button" accessibilityLabel="모달 닫기" />
           <KeyboardAvoidingView
             style={styles.modalSheet}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -2671,8 +2803,13 @@ export default function App() {
                   <Text style={styles.eyebrow}>Daily expenses</Text>
                   <Text style={styles.modalTitle}>{selectedDate} · 합계 {money(modalTotal)}</Text>
                 </View>
-                <TouchableOpacity onPress={closeExpenseModal}>
-                  <Text style={styles.addText}>닫기</Text>
+                <TouchableOpacity
+                  onPress={closeExpenseModal}
+                  style={styles.modalCloseButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="지출 입력 닫기"
+                >
+                  <IconClose size={22} color={colors.muted} strokeWidth={2} />
                 </TouchableOpacity>
               </View>
               {modalFixedItems.length > 0 && (
@@ -2697,37 +2834,53 @@ export default function App() {
                 </TouchableOpacity>
               )}
               <View style={styles.quickRow}>
-                <TextInput
-                  style={[styles.input, styles.quickAmount]}
-                  value={modalAmount}
-                  onChangeText={text => setModalAmount(formatMoneyText(text))}
-                  placeholder="금액"
-                  keyboardType="numeric"
-                  autoCorrect={false}
-                  spellCheck={false}
-                  placeholderTextColor={colors.subtle}
-                />
-                <TextInput
-                  style={[styles.input, { flex: 1 }]}
-                  value={modalMemo}
-                  onChangeText={setModalMemo}
-                  placeholder="메모 예: 점심"
-                  autoCorrect={false}
-                  spellCheck={false}
-                  placeholderTextColor={colors.subtle}
-                />
+                <View style={styles.quickField}>
+                  <Text style={styles.fieldLabel}>금액</Text>
+                  <TextInput
+                    style={[styles.input, styles.quickAmount]}
+                    value={modalAmount}
+                    onChangeText={text => setModalAmount(formatMoneyText(text))}
+                    placeholder="0"
+                    keyboardType="numeric"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    placeholderTextColor={colors.subtle}
+                    accessibilityLabel="지출 금액"
+                  />
+                </View>
+                <View style={[styles.quickField, { flex: 1 }]}>
+                  <Text style={styles.fieldLabel}>메모</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={modalMemo}
+                    onChangeText={setModalMemo}
+                    placeholder="예: 점심"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    placeholderTextColor={colors.subtle}
+                    accessibilityLabel="지출 메모"
+                  />
+                </View>
               </View>
               <View style={styles.chipGrid}>
-                {CATEGORIES.map(category => (
-                  <View key={category} style={styles.chipSlot}>
-                    <TouchableOpacity
-                      style={[styles.chip, modalCategory === category && styles.chipActive]}
-                      onPress={() => setModalCategory(category)}
-                    >
-                      <Text style={[styles.chipText, modalCategory === category && styles.chipTextActive]}>{category}</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
+                {CATEGORIES.map(category => {
+                  const Icon = CATEGORY_ICONS[category]
+                  const active = modalCategory === category
+                  return (
+                    <View key={category} style={styles.chipSlot}>
+                      <TouchableOpacity
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => setModalCategory(category)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`${category} 카테고리`}
+                      >
+                        <Icon size={14} color={active ? colors.surface : colors.muted} strokeWidth={2.2} />
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{category}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )
+                })}
               </View>
               <TouchableOpacity
                 style={[styles.primaryButton, !numeric(modalAmount) && styles.primaryButtonMuted]}
@@ -2772,7 +2925,7 @@ export default function App() {
         </Modal>
         <Modal visible={incomeConfirmOpen} animationType="none" transparent onRequestClose={closeIncomeConfirm}>
           <View style={styles.modalRoot}>
-            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeIncomeConfirm} />
+            <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeIncomeConfirm} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
               <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
                 <View style={styles.modalTop}>
@@ -2780,8 +2933,13 @@ export default function App() {
                     <Text style={styles.eyebrow}>Income check</Text>
                     <Text style={styles.modalTitle}>입금 포함 지금 잔액</Text>
                   </View>
-                  <TouchableOpacity onPress={closeIncomeConfirm}>
-                    <Text style={styles.addText}>닫기</Text>
+                  <TouchableOpacity
+                    onPress={closeIncomeConfirm}
+                    style={styles.modalCloseButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="입금 확인 닫기"
+                  >
+                    <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
                 </View>
                 <MoneyInput label="지금 잔액" value={incomeConfirmBalance} onChange={setIncomeConfirmBalance} />
@@ -2794,7 +2952,7 @@ export default function App() {
         </Modal>
         <Modal visible={transferOpen} animationType="none" transparent onRequestClose={closeTransferModal}>
           <View style={styles.modalRoot}>
-            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeTransferModal} />
+            <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeTransferModal} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
               <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
                 <View style={styles.modalTop}>
@@ -2802,8 +2960,13 @@ export default function App() {
                     <Text style={styles.eyebrow}>예산 이동</Text>
                     <Text style={styles.modalTitle}>예산 간 옮기기</Text>
                   </View>
-                  <TouchableOpacity onPress={closeTransferModal}>
-                    <Text style={styles.addText}>닫기</Text>
+                  <TouchableOpacity
+                    onPress={closeTransferModal}
+                    style={styles.modalCloseButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="예산 이동 닫기"
+                  >
+                    <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.label}>보낼 예산</Text>
@@ -2836,7 +2999,7 @@ export default function App() {
         </Modal>
         <Modal visible={!!reportSnapshot} animationType="none" transparent onRequestClose={closeReportModal}>
           <View style={styles.modalRoot}>
-            <TouchableOpacity style={styles.modalDimissZone} activeOpacity={1} onPress={closeReportModal} />
+            <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeReportModal} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
               <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
                 <View style={styles.modalTop}>
@@ -2844,8 +3007,13 @@ export default function App() {
                     <Text style={styles.eyebrow}>Period report</Text>
                     <Text style={styles.modalTitle}>지난 구간 정리</Text>
                   </View>
-                  <TouchableOpacity onPress={closeReportModal}>
-                    <Text style={styles.addText}>닫기</Text>
+                  <TouchableOpacity
+                    onPress={closeReportModal}
+                    style={styles.modalCloseButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="구간 정리 닫기"
+                  >
+                    <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
                 </View>
                 {reportSnapshot && (
@@ -3050,7 +3218,9 @@ const styles = StyleSheet.create({
   breakdownPlus: { color: colors.tealDark },
   breakdownMinus: { color: colors.danger },
   breakdownDivider: { height: 1, backgroundColor: colors.border, marginVertical: 1 },
-  quickRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  quickRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
+  quickField: { gap: 4 },
+  fieldLabel: { fontSize: 12, color: colors.muted, fontWeight: '700', marginBottom: 2 },
   quickAmount: { width: 112 },
   input: {
     borderWidth: 1,
@@ -3085,16 +3255,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   chip: {
+    flexDirection: 'row',
+    gap: 4,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
-    paddingHorizontal: 1,
-    paddingVertical: 7,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: colors.tealLight,
+    minHeight: 36,
   },
   chipActive: { backgroundColor: colors.teal, borderColor: colors.teal },
-  chipText: { fontSize: 12, color: colors.tealDark, fontWeight: '800' },
+  chipText: { fontSize: 12, color: colors.tealDark, fontWeight: '700' },
   chipTextActive: { color: colors.surface },
   lifestyleOption: {
     flexDirection: 'row',
@@ -3206,7 +3380,8 @@ const styles = StyleSheet.create({
   expenseMemo: { fontSize: 14, fontWeight: '900', color: colors.text },
   expenseSub: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
   expenseAmount: { fontSize: 14, fontWeight: '900', color: colors.text },
-  deleteButton: { paddingHorizontal: 8, paddingVertical: 6 },
+  deleteButton: { paddingHorizontal: 12, paddingVertical: 12, minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
+  modalCloseButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   editText: { fontSize: 12, color: colors.tealDark, fontWeight: '900' },
   deleteText: { fontSize: 12, color: colors.danger, fontWeight: '900' },
   overText: { color: colors.danger },
@@ -3247,9 +3422,9 @@ const styles = StyleSheet.create({
   autoSaveText: { color: colors.muted, fontSize: 12, fontWeight: '800' },
   monthControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   monthButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
@@ -3258,11 +3433,12 @@ const styles = StyleSheet.create({
   },
   monthButtonText: { color: colors.text, fontSize: 24, fontWeight: '900', lineHeight: 26 },
   todayButton: {
-    height: 34,
-    borderRadius: 8,
+    height: 44,
+    minWidth: 56,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 14,
     backgroundColor: colors.text,
   },
   todayButtonText: { color: colors.surface, fontSize: 12, fontWeight: '900' },
@@ -3284,7 +3460,7 @@ const styles = StyleSheet.create({
   legendOver: { backgroundColor: colors.overBorder },
   legendToday: { width: 12, height: 12, borderRadius: 999, backgroundColor: colors.text },
   legendFixed: { width: 16, height: 8, borderRadius: 999, backgroundColor: colors.warningBg, borderWidth: 1, borderColor: colors.warning },
-  legendText: { color: colors.muted, fontSize: 11, fontWeight: '800' },
+  legendText: { color: colors.muted, fontSize: 12, fontWeight: '700' },
   calendarGrid: {
     flex: 1,
     flexDirection: 'row',
@@ -3325,10 +3501,20 @@ const styles = StyleSheet.create({
   dayNumberBadgeToday: { backgroundColor: colors.text },
   dayNumber: { fontSize: 13, color: colors.subtle, fontWeight: '800' },
   dayNumberToday: { color: colors.surface, fontWeight: '900' },
-  dayMoney: {
+  dayMoneyRow: {
+    flexDirection: 'row',
     alignSelf: 'center',
-    minWidth: 42,
+    alignItems: 'center',
     marginTop: 9,
+    gap: 2,
+  },
+  dayToneGlyph: {
+    fontSize: 9,
+    fontWeight: '900',
+    lineHeight: 12,
+  },
+  dayMoney: {
+    minWidth: 42,
     fontSize: 13.5,
     lineHeight: 18,
     fontWeight: '600',
@@ -3385,8 +3571,8 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 10,
   },
-  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },
-  tabText: { fontSize: 13, color: colors.subtle, fontWeight: '900' },
+  tabButton: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 56, paddingVertical: 6, gap: 3 },
+  tabText: { fontSize: 11, color: colors.muted, fontWeight: '700' },
   tabTextActive: { color: colors.tealDark },
   addText: { color: colors.tealDark, fontWeight: '900', fontSize: 13 },
   removeText: { color: colors.danger, fontWeight: '900', fontSize: 12 },
@@ -3426,8 +3612,8 @@ const styles = StyleSheet.create({
   setupNameField: { flex: 1, gap: 5 },
   setupDayField: { width: 58, gap: 5 },
   setupMoneyField: { width: 104, gap: 5 },
-  setupRemoveButton: { paddingBottom: 12, paddingLeft: 1 },
-  miniLabel: { color: colors.muted, fontSize: 11, fontWeight: '900' },
+  setupRemoveButton: { minHeight: 44, minWidth: 44, paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  miniLabel: { color: colors.muted, fontSize: 12, fontWeight: '700' },
   dayInput: { width: 48, height: 44, paddingVertical: 0, textAlign: 'center' },
   moneySmall: { width: 112 },
   modalRoot: {
@@ -3438,7 +3624,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
-  modalDimissZone: {
+  modalDismissZone: {
     ...StyleSheet.absoluteFillObject,
   },
   modalCard: {
