@@ -5,6 +5,14 @@ import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  useFonts,
+  NotoSansKR_400Regular,
+  NotoSansKR_500Medium,
+  NotoSansKR_700Bold,
+  NotoSansKR_800ExtraBold,
+  NotoSansKR_900Black,
+} from '@expo-google-fonts/noto-sans-kr'
+import {
   Home as IconHome,
   Calendar as IconCalendar,
   Wallet as IconWallet,
@@ -281,18 +289,21 @@ const tokens = {
   weight: { regular: '400' as const, medium: '500' as const, semibold: '600' as const, bold: '700' as const, extrabold: '800' as const, heavy: '900' as const },
 } as const
 
-function FocusInput({ style, onFocus, onBlur, ...rest }: React.ComponentProps<typeof TextInput>) {
-  const [focused, setFocused] = useState(false)
-  return (
-    <TextInput
-      style={[style, focused && styles.inputFocused]}
-      onFocus={e => { setFocused(true); onFocus?.(e) }}
-      onBlur={e => { setFocused(false); onBlur?.(e) }}
-      selectionColor={colors.teal}
-      {...rest}
-    />
-  )
-}
+const FocusInput = React.forwardRef<TextInput, React.ComponentProps<typeof TextInput>>(
+  function FocusInput({ style, onFocus, onBlur, ...rest }, ref) {
+    const [focused, setFocused] = useState(false)
+    return (
+      <TextInput
+        ref={ref}
+        style={[style, focused && styles.inputFocused]}
+        onFocus={e => { setFocused(true); onFocus?.(e) }}
+        onBlur={e => { setFocused(false); onBlur?.(e) }}
+        selectionColor={colors.teal}
+        {...rest}
+      />
+    )
+  }
+)
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -1347,7 +1358,34 @@ function BreakdownRow({ label, value, tone }: { label: string; value: string; to
   )
 }
 
+function fontFamilyForWeight(weight?: string): string {
+  switch (weight) {
+    case '900': return 'NotoSansKR_900Black'
+    case '800': return 'NotoSansKR_800ExtraBold'
+    case '700': return 'NotoSansKR_700Bold'
+    case '500': return 'NotoSansKR_500Medium'
+    default: return 'NotoSansKR_400Regular'
+  }
+}
+
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    NotoSansKR_400Regular,
+    NotoSansKR_500Medium,
+    NotoSansKR_700Bold,
+    NotoSansKR_800ExtraBold,
+    NotoSansKR_900Black,
+  })
+  useEffect(() => {
+    if (!fontsLoaded) return
+    const TextAny = Text as unknown as { defaultProps?: { style?: unknown } }
+    TextAny.defaultProps = TextAny.defaultProps ?? {}
+    TextAny.defaultProps.style = [{ fontFamily: 'NotoSansKR_400Regular' }, TextAny.defaultProps.style]
+    const InputAny = TextInput as unknown as { defaultProps?: { style?: unknown } }
+    InputAny.defaultProps = InputAny.defaultProps ?? {}
+    InputAny.defaultProps.style = [{ fontFamily: 'NotoSansKR_400Regular' }, InputAny.defaultProps.style]
+  }, [fontsLoaded])
+
   const [state, setState] = useState<BudgetState>(initialState)
   const [loaded, setLoaded] = useState(false)
   const [tab, setTab] = useState<Tab>('home')
@@ -1378,6 +1416,8 @@ export default function App() {
   const [transferFrom, setTransferFrom] = useState<Category>('쇼핑')
   const [transferTo, setTransferTo] = useState<Category>('식비')
   const [transferAmount, setTransferAmount] = useState(0)
+  const quickMemoRef = useRef<TextInput>(null)
+  const modalMemoRef = useRef<TextInput>(null)
   const today = useMemo(() => new Date(), [])
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
   const todayKey = isoDate(today)
@@ -2374,6 +2414,9 @@ export default function App() {
                 onChangeText={text => setQuickAmount(formatMoneyText(text))}
                 placeholder="0"
                 keyboardType="numeric"
+                returnKeyType="next"
+                onSubmitEditing={() => quickMemoRef.current?.focus()}
+                blurOnSubmit={false}
                 autoCorrect={false}
                 spellCheck={false}
                 placeholderTextColor={colors.subtle}
@@ -2383,10 +2426,16 @@ export default function App() {
             <View style={[styles.quickField, { flex: 1 }]}>
               <Text style={styles.fieldLabel}>메모</Text>
               <FocusInput
+                ref={quickMemoRef}
                 style={styles.input}
                 value={quickMemo}
                 onChangeText={setQuickMemo}
                 placeholder="예: 점심"
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  const saved = addExpense(todayKey, quickAmount, quickMemo, quickCategory)
+                  if (saved) { setQuickAmount(''); setQuickMemo('') }
+                }}
                 autoCorrect={false}
                 spellCheck={false}
                 placeholderTextColor={colors.subtle}
@@ -2950,6 +2999,9 @@ export default function App() {
                     onChangeText={text => setModalAmount(formatMoneyText(text))}
                     placeholder="0"
                     keyboardType="numeric"
+                    returnKeyType="next"
+                    onSubmitEditing={() => modalMemoRef.current?.focus()}
+                    blurOnSubmit={false}
                     autoCorrect={false}
                     spellCheck={false}
                     placeholderTextColor={colors.subtle}
@@ -2959,10 +3011,13 @@ export default function App() {
                 <View style={[styles.quickField, { flex: 1 }]}>
                   <Text style={styles.fieldLabel}>메모</Text>
                   <FocusInput
+                    ref={modalMemoRef}
                     style={styles.input}
                     value={modalMemo}
                     onChangeText={setModalMemo}
                     placeholder="예: 점심"
+                    returnKeyType="done"
+                    onSubmitEditing={saveModalExpense}
                     autoCorrect={false}
                     spellCheck={false}
                     placeholderTextColor={colors.subtle}
@@ -3206,7 +3261,7 @@ const styles = StyleSheet.create({
   dateText: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
   body: { flex: 1 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  content: { padding: 14, gap: 12, paddingBottom: 28 },
+  content: { padding: 16, gap: 12, paddingBottom: 32 },
   setupScreen: { flex: 1, backgroundColor: colors.bg },
   setupContent: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 28, paddingBottom: 16 },
   setupContentKeyboard: { paddingBottom: 28 },
@@ -3216,7 +3271,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 18,
   },
-  setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800' },
+  setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
   setupCopy: { marginTop: 8, color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '700' },
   setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingBottom: 28 },
   setupIntro: {
@@ -3271,12 +3326,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
-    padding: 18,
+    borderRadius: 12,
+    padding: 20,
   },
-  eyebrow: { fontSize: 11, color: colors.tealDark, fontWeight: '900', textTransform: 'uppercase' },
-  heroTitle: { marginTop: 10, fontSize: 14, color: colors.muted, fontWeight: '800' },
-  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  eyebrow: { fontSize: 12, color: colors.tealDark, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+  heroTitle: { marginTop: 8, fontSize: 14, color: colors.muted, fontWeight: '700' },
+  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900', fontFamily: 'NotoSansKR_900Black', fontVariant: ['tabular-nums'] },
   modePill: {
     alignSelf: 'flex-start',
     marginTop: 12,
@@ -3302,28 +3357,28 @@ const styles = StyleSheet.create({
     padding: 12,
     backgroundColor: colors.warningBg,
   },
-  incomePromptTitle: { color: colors.text, fontSize: 14, fontWeight: '900' },
-  incomePromptCopy: { marginTop: 3, color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  incomePromptButton: { borderRadius: 8, backgroundColor: colors.text, paddingHorizontal: 12, paddingVertical: 9 },
-  incomePromptButtonText: { color: colors.surface, fontSize: 12, fontWeight: '900' },
+  incomePromptTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
+  incomePromptCopy: { marginTop: 4, color: colors.muted, fontSize: 12, lineHeight: 18, fontWeight: '600' },
+  incomePromptButton: { borderRadius: 10, backgroundColor: colors.text, paddingHorizontal: 16, paddingVertical: 12, minHeight: 44, justifyContent: 'center' },
+  incomePromptButtonText: { color: colors.surface, fontSize: 13, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
   quickCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
-    padding: 14,
-    gap: 10,
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
   },
   section: {
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
-    padding: 14,
-    gap: 10,
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
   },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
+  sectionTitle: { fontSize: 16, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
   helperText: { marginTop: -4, color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   breakdownBox: {
     borderWidth: 1,
@@ -3415,18 +3470,22 @@ const styles = StyleSheet.create({
   lifestyleWeight: { color: colors.subtle, fontSize: 11, fontWeight: '900' },
   primaryButton: {
     backgroundColor: colors.text,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
-    paddingVertical: 13,
+    paddingVertical: 14,
+    minHeight: 48,
+    justifyContent: 'center',
   },
   primaryButtonMuted: { backgroundColor: colors.muted },
   primaryButtonMutedText: { color: colors.subtle },
-  primaryButtonText: { color: colors.surface, fontSize: 14, fontWeight: '900' },
+  primaryButtonText: { color: colors.surface, fontSize: 15, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
   secondaryButton: {
     borderWidth: 1,
     borderColor: colors.borderMd,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
     paddingVertical: 12,
     backgroundColor: colors.surface,
   },
@@ -3490,7 +3549,7 @@ const styles = StyleSheet.create({
     borderColor: colors.overBorder,
     backgroundColor: colors.overBg,
   },
-  envelopeStatusName: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  envelopeStatusName: { color: colors.text, fontSize: 15, fontWeight: '700', fontFamily: 'NotoSansKR_700Bold' },
   envelopeStatusMeta: { marginTop: 3, color: colors.muted, fontSize: 12, fontWeight: '700' },
   envelopeStatusRight: { alignItems: 'flex-end' },
   envelopeStatusRemaining: { color: colors.text, fontSize: 15, fontWeight: '900', fontVariant: ['tabular-nums'] },
@@ -3507,7 +3566,7 @@ const styles = StyleSheet.create({
   },
   expenseMemo: { fontSize: 14, fontWeight: '900', color: colors.text },
   expenseSub: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
-  expenseAmount: { fontSize: 15, fontWeight: '700', color: colors.text, fontVariant: ['tabular-nums'] },
+  expenseAmount: { fontSize: 15, fontWeight: '700', fontFamily: 'NotoSansKR_700Bold', color: colors.text, fontVariant: ['tabular-nums'] },
   deleteButton: { paddingHorizontal: 12, paddingVertical: 12, minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
   modalCloseButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   editText: { fontSize: 12, color: colors.tealDark, fontWeight: '900' },
@@ -3536,7 +3595,7 @@ const styles = StyleSheet.create({
   reportHeroSuccess: { backgroundColor: colors.successBg, borderWidth: 1, borderColor: colors.underBorder },
   reportHeroOver: { backgroundColor: colors.dangerBg, borderWidth: 1, borderColor: colors.overBorder },
   reportHeroLabel: { fontSize: 13, color: colors.muted, fontWeight: '700' },
-  reportHeroValue: { fontSize: 24, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  reportHeroValue: { fontSize: 24, fontWeight: '900', fontFamily: 'NotoSansKR_900Black', fontVariant: ['tabular-nums'] },
   reportHeroValueSuccess: { color: colors.success },
   reportHeroValueOver: { color: colors.danger },
   emptyIconCircle: {
@@ -3797,5 +3856,5 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   modalTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', color: colors.text },
+  modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
 })

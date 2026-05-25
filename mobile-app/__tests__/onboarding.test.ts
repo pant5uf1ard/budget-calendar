@@ -3,6 +3,14 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() },
 }));
+vi.mock('@expo-google-fonts/noto-sans-kr', () => ({
+  useFonts: () => [true],
+  NotoSansKR_400Regular: 'NotoSansKR_400Regular',
+  NotoSansKR_500Medium: 'NotoSansKR_500Medium',
+  NotoSansKR_700Bold: 'NotoSansKR_700Bold',
+  NotoSansKR_800ExtraBold: 'NotoSansKR_800ExtraBold',
+  NotoSansKR_900Black: 'NotoSansKR_900Black',
+}));
 vi.mock('expo-haptics', () => ({
   selectionAsync: vi.fn(),
   impactAsync: vi.fn(),
