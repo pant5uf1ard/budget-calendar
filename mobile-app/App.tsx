@@ -1,8 +1,9 @@
 import { StatusBar } from 'expo-status-bar'
+import * as Haptics from 'expo-haptics'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Home as IconHome,
   Calendar as IconCalendar,
@@ -22,8 +23,11 @@ import {
   Trash2 as IconTrash,
 } from 'lucide-react-native'
 import {
+  AccessibilityInfo,
   Alert,
+  Animated,
   AppState,
+  Easing,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -251,6 +255,45 @@ const colors = {
   warningBg: '#FFFBEB',
 }
 
+const tokens = {
+  color: {
+    bg: colors.bg,
+    surface: colors.surface,
+    border: colors.border,
+    borderStrong: colors.borderMd,
+    textPrimary: colors.text,
+    textSecondary: colors.muted,
+    textTertiary: colors.subtle,
+    accent: colors.teal,
+    accentDark: colors.tealDark,
+    accentSoft: colors.tealLight,
+    success: colors.success,
+    successBg: colors.successBg,
+    danger: colors.danger,
+    dangerBg: colors.dangerBg,
+    warning: colors.warning,
+    warningBg: colors.warningBg,
+    overlay: 'rgba(15, 23, 42, 0.45)',
+  },
+  space: { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 },
+  radius: { sm: 8, md: 10, lg: 14, xl: 20, pill: 999 },
+  type: { caption: 12, body: 14, bodyLg: 15, title: 17, titleLg: 20, hero: 28, display: 36 },
+  weight: { regular: '400' as const, medium: '500' as const, semibold: '600' as const, bold: '700' as const, extrabold: '800' as const, heavy: '900' as const },
+} as const
+
+function FocusInput({ style, onFocus, onBlur, ...rest }: React.ComponentProps<typeof TextInput>) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <TextInput
+      style={[style, focused && styles.inputFocused]}
+      onFocus={e => { setFocused(true); onFocus?.(e) }}
+      onBlur={e => { setFocused(false); onBlur?.(e) }}
+      selectionColor={colors.teal}
+      {...rest}
+    />
+  )
+}
+
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
@@ -282,10 +325,23 @@ function formatMoneyText(value: string) {
 }
 
 function confirmDestructive(title: string, message: string, onConfirm: () => void) {
+  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
   Alert.alert(title, message, [
     { text: '취소', style: 'cancel' },
     { text: '삭제', style: 'destructive', onPress: onConfirm },
   ])
+}
+
+function hapticLight() {
+  Haptics.selectionAsync().catch(() => {})
+}
+
+function hapticMedium() {
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {})
+}
+
+function hapticSuccess() {
+  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {})
 }
 
 function normalizeCategory(category: unknown): Category {
@@ -1329,6 +1385,44 @@ export default function App() {
   const envelopeStatuses = calculateEnvelopeStatus(state, today)
   const atSetupResult = SETUP_STEPS[setupStep]?.kind === 'result'
 
+  const [reduceMotion, setReduceMotion] = useState(false)
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled?.().then(setReduceMotion).catch(() => {})
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion)
+    return () => sub.remove()
+  }, [])
+
+  const heroPulse = useRef(new Animated.Value(1)).current
+  const isOverBudget = plan.todayRemaining < 0
+  useEffect(() => {
+    if (!isOverBudget || reduceMotion) {
+      heroPulse.setValue(1)
+      return
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(heroPulse, { toValue: 1.04, duration: 700, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(heroPulse, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+      { iterations: 3 },
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [isOverBudget, heroPulse, reduceMotion])
+
+  const expenseCount = state.expenses.length
+  const expenseBounce = useRef(new Animated.Value(1)).current
+  const lastExpenseCountRef = useRef(expenseCount)
+  useEffect(() => {
+    if (expenseCount > lastExpenseCountRef.current && !reduceMotion) {
+      Animated.sequence([
+        Animated.spring(expenseBounce, { toValue: 1.06, useNativeDriver: true, friction: 4, tension: 200 }),
+        Animated.spring(expenseBounce, { toValue: 1, useNativeDriver: true, friction: 5, tension: 180 }),
+      ]).start()
+    }
+    lastExpenseCountRef.current = expenseCount
+  }, [expenseCount, expenseBounce, reduceMotion])
+
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then(value => {
@@ -1403,6 +1497,7 @@ export default function App() {
   function addExpense(date: string, amountText: string, memo: string, category: Category) {
     const amount = numeric(amountText)
     if (!amount) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {})
       Alert.alert('금액 입력', '쓴 금액을 입력해주세요.')
       return false
     }
@@ -1415,6 +1510,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
     }
     setState(prev => stateAfterAddExpense(prev, record))
+    hapticSuccess()
     return true
   }
 
@@ -1425,6 +1521,12 @@ export default function App() {
   function toggleNoSpend(dateKey: string) {
     setState(prev => {
       const enabled = prev.noSpendDates.includes(dateKey)
+      if (!enabled) {
+        hapticSuccess()
+        const total = prev.noSpendDates.length + 1
+        const message = total >= 5 ? `벌써 ${total}일 무지출! 멋져요 🌱` : '오늘 무지출! 한 걸음 더 가까워졌어요'
+        Alert.alert('무지출 달성', message)
+      }
       return {
         ...prev,
         noSpendDates: enabled
@@ -2246,7 +2348,9 @@ export default function App() {
         <View style={styles.hero}>
           <Text style={styles.eyebrow}>오늘</Text>
           <Text style={styles.heroTitle}>오늘 남은 돈</Text>
-          <Text style={[styles.heroMoney, plan.todayRemaining < 0 && styles.dangerText]}>{money(plan.todayRemaining)}</Text>
+          <Animated.Text style={[styles.heroMoney, plan.todayRemaining < 0 && styles.dangerText, { transform: [{ scale: heroPulse }] }]}>
+            {money(plan.todayRemaining)}
+          </Animated.Text>
           <Text style={styles.modePill}>{plan.modeLabel}</Text>
           {plan.mode === 'income' && (
             <Text style={styles.heroSub}>{plan.overdue ? '입금 확인 필요' : `다음 입금까지 D-${plan.daysUntilEnd}`}</Text>
@@ -2264,7 +2368,7 @@ export default function App() {
           <View style={styles.quickRow}>
             <View style={styles.quickField}>
               <Text style={styles.fieldLabel}>금액</Text>
-              <TextInput
+              <FocusInput
                 style={[styles.input, styles.quickAmount]}
                 value={quickAmount}
                 onChangeText={text => setQuickAmount(formatMoneyText(text))}
@@ -2278,7 +2382,7 @@ export default function App() {
             </View>
             <View style={[styles.quickField, { flex: 1 }]}>
               <Text style={styles.fieldLabel}>메모</Text>
-              <TextInput
+              <FocusInput
                 style={styles.input}
                 value={quickMemo}
                 onChangeText={setQuickMemo}
@@ -2298,7 +2402,7 @@ export default function App() {
                 <View key={category} style={styles.chipSlot}>
                   <TouchableOpacity
                     style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => setQuickCategory(category)}
+                    onPress={() => { hapticLight(); setQuickCategory(category) }}
                     accessibilityRole="button"
                     accessibilityState={{ selected: active }}
                     accessibilityLabel={`${category} 카테고리`}
@@ -2323,11 +2427,15 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.section}>
+        <Animated.View style={[styles.section, { transform: [{ scale: expenseBounce }] }]}>
           <Text style={styles.sectionTitle}>오늘 기록</Text>
           {todayRecords.length === 0 ? (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>아직 기록한 지출이 없습니다.</Text>
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIconCircle}>
+                <IconCheck size={28} color={colors.tealDark} strokeWidth={2.5} />
+              </View>
+              <Text style={styles.emptyTitle}>오늘 지출 없음</Text>
+              <Text style={styles.emptyHint}>위 입력창에 금액만 적어도 바로 기록돼요</Text>
             </View>
           ) : todayRecords.map(item => (
             <ExpenseRow
@@ -2340,11 +2448,11 @@ export default function App() {
               onDelete={() => confirmDestructive('지출 삭제', `${money(item.amount)} 기록을 삭제할까요?`, () => deleteExpense(item.id))}
             />
           ))}
-        </View>
+        </Animated.View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>오늘 메모</Text>
-          <TextInput
+          <FocusInput
             style={[styles.input, styles.noteInput]}
             value={state.dailyNotes[todayKey] ?? ''}
             onChangeText={note => updateDailyNote(todayKey, note)}
@@ -2766,7 +2874,7 @@ export default function App() {
               <TouchableOpacity
                 key={key}
                 style={styles.tabButton}
-                onPress={() => setTab(key)}
+                onPress={() => { hapticLight(); setTab(key) }}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: tab === key }}
                 accessibilityLabel={`${label} 탭`}
@@ -2788,7 +2896,7 @@ export default function App() {
           </View>
         )}
 
-        <Modal visible={!!selectedDate} animationType="none" transparent onRequestClose={closeExpenseModal}>
+        <Modal visible={!!selectedDate} animationType="slide" transparent onRequestClose={closeExpenseModal}>
           <View style={styles.modalRoot}>
             <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeExpenseModal} accessibilityElementsHidden accessibilityRole="button" accessibilityLabel="모달 닫기" />
           <KeyboardAvoidingView
@@ -2826,7 +2934,7 @@ export default function App() {
               {selectedDate && modalRecords.length === 0 && (
                 <TouchableOpacity
                   style={[styles.noSpendButton, modalNoSpend && styles.noSpendButtonActive]}
-                  onPress={() => toggleNoSpend(selectedDate)}
+                  onPress={() => { hapticMedium(); toggleNoSpend(selectedDate) }}
                 >
                   <Text style={[styles.noSpendText, modalNoSpend && styles.noSpendTextActive]}>
                     {modalNoSpend ? '무지출 체크됨' : '오늘은 무지출'}
@@ -2836,7 +2944,7 @@ export default function App() {
               <View style={styles.quickRow}>
                 <View style={styles.quickField}>
                   <Text style={styles.fieldLabel}>금액</Text>
-                  <TextInput
+                  <FocusInput
                     style={[styles.input, styles.quickAmount]}
                     value={modalAmount}
                     onChangeText={text => setModalAmount(formatMoneyText(text))}
@@ -2850,7 +2958,7 @@ export default function App() {
                 </View>
                 <View style={[styles.quickField, { flex: 1 }]}>
                   <Text style={styles.fieldLabel}>메모</Text>
-                  <TextInput
+                  <FocusInput
                     style={styles.input}
                     value={modalMemo}
                     onChangeText={setModalMemo}
@@ -2870,7 +2978,7 @@ export default function App() {
                     <View key={category} style={styles.chipSlot}>
                       <TouchableOpacity
                         style={[styles.chip, active && styles.chipActive]}
-                        onPress={() => setModalCategory(category)}
+                        onPress={() => { hapticLight(); setModalCategory(category) }}
                         accessibilityRole="button"
                         accessibilityState={{ selected: active }}
                         accessibilityLabel={`${category} 카테고리`}
@@ -2923,7 +3031,7 @@ export default function App() {
           </KeyboardAvoidingView>
           </View>
         </Modal>
-        <Modal visible={incomeConfirmOpen} animationType="none" transparent onRequestClose={closeIncomeConfirm}>
+        <Modal visible={incomeConfirmOpen} animationType="slide" transparent onRequestClose={closeIncomeConfirm}>
           <View style={styles.modalRoot}>
             <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeIncomeConfirm} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
@@ -2950,7 +3058,7 @@ export default function App() {
             </KeyboardAvoidingView>
           </View>
         </Modal>
-        <Modal visible={transferOpen} animationType="none" transparent onRequestClose={closeTransferModal}>
+        <Modal visible={transferOpen} animationType="slide" transparent onRequestClose={closeTransferModal}>
           <View style={styles.modalRoot}>
             <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeTransferModal} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
@@ -2997,7 +3105,7 @@ export default function App() {
             </KeyboardAvoidingView>
           </View>
         </Modal>
-        <Modal visible={!!reportSnapshot} animationType="none" transparent onRequestClose={closeReportModal}>
+        <Modal visible={!!reportSnapshot} animationType="slide" transparent onRequestClose={closeReportModal}>
           <View style={styles.modalRoot}>
             <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={closeReportModal} />
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
@@ -3016,21 +3124,34 @@ export default function App() {
                     <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
                 </View>
-                {reportSnapshot && (
-                  <>
-                    <Text style={styles.helperText}>{reportSnapshot.startDate} ~ {reportSnapshot.endDate}</Text>
-                    {CATEGORIES.map(category => {
-                      const planned = reportSnapshot.envelopePlan.find(item => item.category === category)?.limit ?? 0
-                      const actual = reportSnapshot.actualByCategory.find(item => item.category === category)?.amount ?? 0
-                      return (
-                        <BreakdownRow
-                          key={category}
-                          label={category}
-                          value={`계획 ${money(planned)} · 실제 ${money(actual)}`}
-                          tone={actual > planned ? 'minus' : 'plus'}
-                        />
-                      )
-                    })}
+                {reportSnapshot && (() => {
+                  const totalPlanned = reportSnapshot.envelopePlan.reduce((sum, item) => sum + item.limit, 0)
+                  const totalActual = reportSnapshot.actualByCategory.reduce((sum, item) => sum + item.amount, 0)
+                  const saved = totalPlanned - totalActual
+                  const underBudget = saved > 0
+                  return (
+                    <>
+                      <View style={[styles.reportHero, underBudget ? styles.reportHeroSuccess : styles.reportHeroOver]}>
+                        <Text style={styles.reportHeroLabel}>
+                          {underBudget ? '계획보다 아껴 썼어요' : '계획보다 더 썼어요'}
+                        </Text>
+                        <Text style={[styles.reportHeroValue, underBudget ? styles.reportHeroValueSuccess : styles.reportHeroValueOver]}>
+                          {underBudget ? `+${money(saved)} 절약` : `-${money(-saved)} 초과`}
+                        </Text>
+                      </View>
+                      <Text style={styles.helperText}>{reportSnapshot.startDate} ~ {reportSnapshot.endDate}</Text>
+                      {CATEGORIES.map(category => {
+                        const planned = reportSnapshot.envelopePlan.find(item => item.category === category)?.limit ?? 0
+                        const actual = reportSnapshot.actualByCategory.find(item => item.category === category)?.amount ?? 0
+                        return (
+                          <BreakdownRow
+                            key={category}
+                            label={category}
+                            value={`계획 ${money(planned)} · 실제 ${money(actual)}`}
+                            tone={actual > planned ? 'minus' : 'plus'}
+                          />
+                        )
+                      })}
                     <Text style={styles.sectionTitle}>다음 구간 예산</Text>
                     {state.envelopes.map(envelope => (
                       <View key={envelope.id} style={styles.envelopeEditRow}>
@@ -3044,9 +3165,10 @@ export default function App() {
                           placeholderTextColor={colors.subtle}
                         />
                       </View>
-                    ))}
-                  </>
-                )}
+                      ))}
+                    </>
+                  )
+                })()}
               </ScrollView>
             </KeyboardAvoidingView>
           </View>
@@ -3094,7 +3216,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 18,
   },
-  setupTitle: { marginTop: 10, color: colors.text, fontSize: 26, fontWeight: '900' },
+  setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800' },
   setupCopy: { marginTop: 8, color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '700' },
   setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingBottom: 28 },
   setupIntro: {
@@ -3154,7 +3276,7 @@ const styles = StyleSheet.create({
   },
   eyebrow: { fontSize: 11, color: colors.tealDark, fontWeight: '900', textTransform: 'uppercase' },
   heroTitle: { marginTop: 10, fontSize: 14, color: colors.muted, fontWeight: '800' },
-  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900' },
+  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900', fontVariant: ['tabular-nums'] },
   modePill: {
     alignSelf: 'flex-start',
     marginTop: 12,
@@ -3201,7 +3323,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { fontSize: 16, fontWeight: '900', color: colors.text },
+  sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
   helperText: { marginTop: -4, color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   breakdownBox: {
     borderWidth: 1,
@@ -3232,6 +3354,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontWeight: '700',
     backgroundColor: colors.surface,
+  },
+  inputFocused: {
+    borderColor: colors.teal,
+    borderWidth: 2,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
   },
   field: { gap: 6 },
   label: { fontSize: 13, color: colors.muted, fontWeight: '800' },
@@ -3362,10 +3490,10 @@ const styles = StyleSheet.create({
     borderColor: colors.overBorder,
     backgroundColor: colors.overBg,
   },
-  envelopeStatusName: { color: colors.text, fontSize: 14, fontWeight: '900' },
+  envelopeStatusName: { color: colors.text, fontSize: 15, fontWeight: '700' },
   envelopeStatusMeta: { marginTop: 3, color: colors.muted, fontSize: 12, fontWeight: '700' },
   envelopeStatusRight: { alignItems: 'flex-end' },
-  envelopeStatusRemaining: { color: colors.text, fontSize: 15, fontWeight: '900' },
+  envelopeStatusRemaining: { color: colors.text, fontSize: 15, fontWeight: '900', fontVariant: ['tabular-nums'] },
   envelopeWarningText: { marginTop: 3, color: colors.warning, fontSize: 11, fontWeight: '900' },
   expenseRow: {
     flexDirection: 'row',
@@ -3379,7 +3507,7 @@ const styles = StyleSheet.create({
   },
   expenseMemo: { fontSize: 14, fontWeight: '900', color: colors.text },
   expenseSub: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
-  expenseAmount: { fontSize: 14, fontWeight: '900', color: colors.text },
+  expenseAmount: { fontSize: 15, fontWeight: '700', color: colors.text, fontVariant: ['tabular-nums'] },
   deleteButton: { paddingHorizontal: 12, paddingVertical: 12, minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
   modalCloseButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   editText: { fontSize: 12, color: colors.tealDark, fontWeight: '900' },
@@ -3391,6 +3519,37 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     lineHeight: 20,
   },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  reportHero: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    gap: 6,
+    marginVertical: 8,
+  },
+  reportHeroSuccess: { backgroundColor: colors.successBg, borderWidth: 1, borderColor: colors.underBorder },
+  reportHeroOver: { backgroundColor: colors.dangerBg, borderWidth: 1, borderColor: colors.overBorder },
+  reportHeroLabel: { fontSize: 13, color: colors.muted, fontWeight: '700' },
+  reportHeroValue: { fontSize: 24, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  reportHeroValueSuccess: { color: colors.success },
+  reportHeroValueOver: { color: colors.danger },
+  emptyIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.tealLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  emptyTitle: { fontSize: 15, color: colors.text, fontWeight: '800' },
+  emptyHint: { fontSize: 13, color: colors.muted, fontWeight: '600', textAlign: 'center' },
   emptyBox: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -3399,7 +3558,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: colors.bg,
   },
-  emptyText: { color: colors.subtle, fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  emptyText: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '600' },
   calendarHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3519,6 +3678,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: '600',
     textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   dayBudgetMoney: { color: colors.text },
   daySpentMoney: { color: colors.text },
@@ -3637,5 +3797,5 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   modalTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  modalTitle: { marginTop: 6, fontSize: 18, fontWeight: '900', color: colors.text },
+  modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', color: colors.text },
 })

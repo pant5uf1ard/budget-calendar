@@ -8,6 +8,13 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+vi.mock('expo-haptics', () => ({
+  selectionAsync: vi.fn(),
+  impactAsync: vi.fn(),
+  notificationAsync: vi.fn(),
+  ImpactFeedbackStyle: { Light: 'Light', Medium: 'Medium', Heavy: 'Heavy' },
+  NotificationFeedbackType: { Success: 'Success', Warning: 'Warning', Error: 'Error' },
+}));
 vi.mock('expo-status-bar', () => ({
   StatusBar: () => null,
 }));
@@ -22,7 +29,21 @@ vi.mock('react-native-safe-area-context', () => ({
 }));
 
 vi.mock('react-native', () => ({
+  AccessibilityInfo: {
+    isReduceMotionEnabled: vi.fn(() => Promise.resolve(false)),
+    addEventListener: vi.fn(() => ({ remove: vi.fn() })),
+  },
   Alert: { alert: vi.fn() },
+  Animated: {
+    Value: class { setValue() {} },
+    View: ({ children }: { children: unknown }) => children,
+    Text: ({ children }: { children: unknown }) => children,
+    timing: vi.fn(() => ({ start: vi.fn() })),
+    spring: vi.fn(() => ({ start: vi.fn() })),
+    sequence: vi.fn(() => ({ start: vi.fn() })),
+    loop: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
+  },
+  Easing: { inOut: () => () => 0, quad: () => 0 },
   AppState: { addEventListener: vi.fn(() => ({ remove: vi.fn() })) },
   Keyboard: {
     addListener: vi.fn(() => ({ remove: vi.fn() })),
