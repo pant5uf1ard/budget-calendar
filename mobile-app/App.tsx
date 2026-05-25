@@ -1,8 +1,14 @@
 import { StatusBar } from 'expo-status-bar'
 import * as Haptics from 'expo-haptics'
+import * as FileSystem from 'expo-file-system/legacy'
+import * as Sharing from 'expo-sharing'
+import * as DocumentPicker from 'expo-document-picker'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
+import DraggableFlatList, { RenderItemParams, ScaleDecorator } from 'react-native-draggable-flatlist'
+import Reanimated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useFonts } from 'expo-font'
 import {
@@ -1472,6 +1478,17 @@ export default function App() {
     return () => sub.remove()
   }, [])
 
+  const fadeIn = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    if (!loaded) return
+    Animated.timing(fadeIn, {
+      toValue: 1,
+      duration: reduceMotion ? 0 : 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [loaded, fadeIn, reduceMotion])
+
   const heroPulse = useRef(new Animated.Value(1)).current
   const isOverBudget = plan.todayRemaining < 0
   useEffect(() => {
@@ -1569,6 +1586,48 @@ export default function App() {
       }
     })
   }, [atSetupResult, coachProfile])
+
+  async function exportBackup() {
+    try {
+      const json = JSON.stringify(state, null, 2)
+      const stamp = isoDate(new Date())
+      const uri = `${FileSystem.documentDirectory}budget-backup-${stamp}.json`
+      await FileSystem.writeAsStringAsync(uri, json, { encoding: FileSystem.EncodingType.UTF8 })
+      const available = await Sharing.isAvailableAsync()
+      if (available) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: '예산 데이터 백업' })
+        hapticSuccess()
+      } else {
+        Alert.alert('내보내기', `파일을 ${uri} 에 저장했습니다.`)
+      }
+    } catch (e) {
+      Alert.alert('내보내기 실패', String(e))
+    }
+  }
+
+  async function importBackup() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'application/json', copyToCacheDirectory: true })
+      if (result.canceled || !result.assets?.[0]) return
+      const file = result.assets[0]
+      const text = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 })
+      const parsed = JSON.parse(text)
+      const next = sanitizeBudgetState(parsed)
+      Alert.alert('불러오기', '현재 데이터를 덮어씁니다. 진행할까요?', [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '덮어쓰기',
+          style: 'destructive',
+          onPress: () => {
+            setState(next)
+            hapticSuccess()
+          },
+        },
+      ])
+    } catch (e) {
+      Alert.alert('불러오기 실패', String(e))
+    }
+  }
 
   function patch(next: Partial<BudgetState>) {
     setState(prev => ({ ...prev, ...next }))
@@ -2539,15 +2598,21 @@ export default function App() {
               <Text style={styles.emptyHint}>위 입력창에 금액만 적어도 바로 기록돼요</Text>
             </View>
           ) : todayRecords.map(item => (
-            <ExpenseRow
+            <Reanimated.View
               key={item.id}
-              item={item}
-              onEdit={() => {
-                setSelectedDate(item.date)
-                startEditingExpense(item)
-              }}
-              onDelete={() => confirmDestructive('지출 삭제', `${money(item.amount)} 기록을 삭제할까요?`, () => deleteExpense(item.id))}
-            />
+              entering={reduceMotion ? undefined : FadeIn.duration(220)}
+              exiting={reduceMotion ? undefined : FadeOut.duration(160)}
+              layout={reduceMotion ? undefined : LinearTransition.springify().damping(18)}
+            >
+              <ExpenseRow
+                item={item}
+                onEdit={() => {
+                  setSelectedDate(item.date)
+                  startEditingExpense(item)
+                }}
+                onDelete={() => confirmDestructive('지출 삭제', `${money(item.amount)} 기록을 삭제할까요?`, () => deleteExpense(item.id))}
+              />
+            </Reanimated.View>
           ))}
         </Animated.View>
 
@@ -2713,8 +2778,9 @@ export default function App() {
               <Text style={styles.emptyText}>예산이 아직 없습니다.</Text>
             </View>
           ) : envelopeStatuses.map(envelope => (
-            <View
+            <Reanimated.View
               key={envelope.id}
+              layout={reduceMotion ? undefined : LinearTransition.springify().damping(20)}
               style={[
                 styles.envelopeStatusCard,
                 envelope.warning === 'watch' && styles.envelopeStatusWatch,
@@ -2743,7 +2809,7 @@ export default function App() {
                   </Text>
                 )}
               </View>
-            </View>
+            </Reanimated.View>
           ))}
         </View>
       </ScrollView>
@@ -2907,29 +2973,69 @@ export default function App() {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>이번 구간 예산</Text>
-          <Text style={styles.helperText}>구간 예산을 바꾸면 다음 지출부터 바로 반영됩니다.</Text>
-          {state.envelopes.map(envelope => (
-            <View key={envelope.id} style={styles.envelopeEditRow}>
-              <TextInput
-                style={[styles.input, { flex: 1 }]}
-                value={envelope.name}
-                onChangeText={name => updateEnvelope(envelope.id, { name })}
-                placeholder="예산 이름"
-                placeholderTextColor={colors.subtle}
-                selectTextOnFocus
-                autoCorrect={false}
-                spellCheck={false}
-              />
-              <TextInput
-                style={[styles.input, styles.moneySmall]}
-                value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
-                keyboardType="numeric"
-                onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
-                placeholder="구간 예산"
-                placeholderTextColor={colors.subtle}
-              />
-            </View>
-          ))}
+          <Text style={styles.helperText}>이름을 길게 눌러 순서를 바꿔보세요. 예산을 수정하면 다음 지출부터 반영됩니다.</Text>
+          <DraggableFlatList
+            data={state.envelopes}
+            keyExtractor={envelope => envelope.id}
+            onDragBegin={hapticLight}
+            onDragEnd={({ data }) => { hapticMedium(); patch({ envelopes: data }) }}
+            scrollEnabled={false}
+            activationDistance={8}
+            renderItem={({ item: envelope, drag, isActive }: RenderItemParams<typeof state.envelopes[number]>) => (
+              <ScaleDecorator>
+                <View style={[styles.envelopeEditRow, styles.envelopeDragRow, isActive && styles.envelopeDragActive]}>
+                  <TouchableOpacity
+                    onLongPress={drag}
+                    delayLongPress={150}
+                    style={styles.dragHandle}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${envelope.name} 순서 변경`}
+                  >
+                    <IconOther size={18} color={colors.muted} strokeWidth={2} />
+                  </TouchableOpacity>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={envelope.name}
+                    onChangeText={name => updateEnvelope(envelope.id, { name })}
+                    placeholder="예산 이름"
+                    placeholderTextColor={colors.subtle}
+                    selectTextOnFocus
+                    autoCorrect={false}
+                    spellCheck={false}
+                  />
+                  <TextInput
+                    style={[styles.input, styles.moneySmall]}
+                    value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
+                    keyboardType="numeric"
+                    onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
+                    placeholder="구간 예산"
+                    placeholderTextColor={colors.subtle}
+                  />
+                </View>
+              </ScaleDecorator>
+            )}
+          />
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>데이터 관리</Text>
+          <Text style={styles.helperText}>JSON 파일로 백업하거나 다른 기기에서 가져올 수 있어요.</Text>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={exportBackup}
+            accessibilityRole="button"
+            accessibilityLabel="데이터 내보내기"
+          >
+            <Text style={styles.secondaryButtonText}>백업 내보내기</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={importBackup}
+            accessibilityRole="button"
+            accessibilityLabel="데이터 가져오기"
+          >
+            <Text style={styles.secondaryButtonText}>백업 불러오기</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     )
@@ -2943,6 +3049,7 @@ export default function App() {
   const modalNoSpend = selectedDate ? isNoSpendDate(state, selectedDate) : false
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <SafeAreaProvider>
       <SafeAreaView style={[styles.safe, loaded && !state.setupComplete && styles.setupSafe]}>
         <StatusBar style="dark" />
@@ -2953,11 +3060,15 @@ export default function App() {
           keyboardVerticalOffset={loaded && !state.setupComplete ? 0 : 8}
         >
           {!loaded && <SkeletonHome />}
-          {loaded && !state.setupComplete && renderSetup()}
-          {loaded && state.setupComplete && tab === 'home' && renderHome()}
-          {loaded && state.setupComplete && tab === 'calendar' && renderCalendar()}
-          {loaded && state.setupComplete && tab === 'envelopes' && renderEnvelopes()}
-          {loaded && state.setupComplete && tab === 'settings' && renderSettings()}
+          {loaded && (
+            <Animated.View style={{ flex: 1, opacity: fadeIn }}>
+              {!state.setupComplete && renderSetup()}
+              {state.setupComplete && tab === 'home' && renderHome()}
+              {state.setupComplete && tab === 'calendar' && renderCalendar()}
+              {state.setupComplete && tab === 'envelopes' && renderEnvelopes()}
+              {state.setupComplete && tab === 'settings' && renderSettings()}
+            </Animated.View>
+          )}
         </KeyboardAvoidingView>
 
         {loaded && state.setupComplete && (
@@ -3311,6 +3422,7 @@ export default function App() {
         )}
       </SafeAreaView>
     </SafeAreaProvider>
+    </GestureHandlerRootView>
   )
 }
 
@@ -3885,6 +3997,9 @@ const styles = StyleSheet.create({
   removeText: { color: colors.danger, fontWeight: '700', fontSize: 13 },
   editRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   envelopeEditRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  envelopeDragRow: { backgroundColor: colors.surface, borderRadius: 10, paddingVertical: 4 },
+  envelopeDragActive: { borderWidth: 1, borderColor: colors.teal, backgroundColor: colors.tealLight },
+  dragHandle: { width: 32, height: 44, alignItems: 'center', justifyContent: 'center' },
   setupEnvelopeRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   setupEnvelopeNameField: { flex: 1, gap: 4 },
   setupEnvelopeMoneyField: { width: 120, gap: 4 },

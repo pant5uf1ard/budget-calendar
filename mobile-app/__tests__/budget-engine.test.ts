@@ -12,6 +12,32 @@ vi.mock('expo-font', () => ({
   useFonts: () => [true],
   loadAsync: vi.fn(),
 }));
+vi.mock('expo-file-system/legacy', () => ({
+  documentDirectory: 'file:///stub/',
+  writeAsStringAsync: vi.fn(),
+  readAsStringAsync: vi.fn(),
+  EncodingType: { UTF8: 'utf8' },
+}));
+vi.mock('expo-sharing', () => ({
+  isAvailableAsync: vi.fn(() => Promise.resolve(false)),
+  shareAsync: vi.fn(),
+}));
+vi.mock('expo-document-picker', () => ({
+  getDocumentAsync: vi.fn(() => Promise.resolve({ canceled: true })),
+}));
+vi.mock('react-native-gesture-handler', () => ({
+  GestureHandlerRootView: ({ children }: { children: unknown }) => children,
+}));
+vi.mock('react-native-draggable-flatlist', () => ({
+  default: () => null,
+  ScaleDecorator: ({ children }: { children: unknown }) => children,
+}));
+vi.mock('react-native-reanimated', () => ({
+  default: { View: ({ children }: { children: unknown }) => children },
+  FadeIn: { duration: () => ({}) },
+  FadeOut: { duration: () => ({}) },
+  LinearTransition: { springify: () => ({ damping: () => ({}) }) },
+}));
 vi.mock('expo-haptics', () => ({
   selectionAsync: vi.fn(),
   impactAsync: vi.fn(),
