@@ -4,14 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  useFonts,
-  NotoSansKR_400Regular,
-  NotoSansKR_500Medium,
-  NotoSansKR_700Bold,
-  NotoSansKR_800ExtraBold,
-  NotoSansKR_900Black,
-} from '@expo-google-fonts/noto-sans-kr'
+import { useFonts } from 'expo-font'
 import {
   Home as IconHome,
   Calendar as IconCalendar,
@@ -38,6 +31,7 @@ import {
   Easing,
   Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
   Platform,
   ScrollView,
@@ -46,8 +40,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native'
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true)
+}
 
 type Tab = 'home' | 'calendar' | 'envelopes' | 'settings'
 type Category = '식비' | '생활' | '교통' | '쇼핑' | '문화' | '기타'
@@ -288,6 +287,47 @@ const tokens = {
   type: { caption: 12, body: 14, bodyLg: 15, title: 17, titleLg: 20, hero: 28, display: 36 },
   weight: { regular: '400' as const, medium: '500' as const, semibold: '600' as const, bold: '700' as const, extrabold: '800' as const, heavy: '900' as const },
 } as const
+
+function SkeletonHome() {
+  const shimmer = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmer, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(shimmer, { toValue: 0, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [shimmer])
+  const opacity = shimmer.interpolate({ inputRange: [0, 1], outputRange: [0.4, 0.85] })
+  const Block = ({ h, w, mt = 0, br = 8 }: { h: number; w?: number | `${number}%`; mt?: number; br?: number }) => (
+    <Animated.View style={{ height: h, width: w ?? '100%' as const, marginTop: mt, borderRadius: br, backgroundColor: colors.border, opacity }} />
+  )
+  return (
+    <View style={{ padding: 16, gap: 12 }}>
+      <View style={{ backgroundColor: colors.surface, borderRadius: 12, padding: 20, borderWidth: 1, borderColor: colors.border, gap: 12 }}>
+        <Block h={12} w={48} />
+        <Block h={16} w={120} mt={4} />
+        <Block h={40} w={200} mt={4} />
+        <Block h={20} w={100} mt={8} br={999} />
+      </View>
+      <View style={{ backgroundColor: colors.surface, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: colors.border, gap: 12 }}>
+        <Block h={16} w={120} />
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Block h={44} w={120} />
+          <View style={{ flex: 1 }}><Block h={44} /></View>
+        </View>
+        <View style={{ flexDirection: 'row', gap: 4 }}>
+          {[0,1,2,3,4,5].map(i => (
+            <View key={i} style={{ flex: 1 }}><Block h={36} br={10} /></View>
+          ))}
+        </View>
+        <Block h={48} br={10} mt={4} />
+      </View>
+    </View>
+  )
+}
 
 const FocusInput = React.forwardRef<TextInput, React.ComponentProps<typeof TextInput>>(
   function FocusInput({ style, onFocus, onBlur, ...rest }, ref) {
@@ -1360,30 +1400,30 @@ function BreakdownRow({ label, value, tone }: { label: string; value: string; to
 
 function fontFamilyForWeight(weight?: string): string {
   switch (weight) {
-    case '900': return 'NotoSansKR_900Black'
-    case '800': return 'NotoSansKR_800ExtraBold'
-    case '700': return 'NotoSansKR_700Bold'
-    case '500': return 'NotoSansKR_500Medium'
-    default: return 'NotoSansKR_400Regular'
+    case '900': return 'Pretendard-Black'
+    case '800': return 'Pretendard-ExtraBold'
+    case '700': return 'Pretendard-Bold'
+    case '500': return 'Pretendard-Medium'
+    default: return 'Pretendard-Regular'
   }
 }
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    NotoSansKR_400Regular,
-    NotoSansKR_500Medium,
-    NotoSansKR_700Bold,
-    NotoSansKR_800ExtraBold,
-    NotoSansKR_900Black,
+    'Pretendard-Regular': require('./assets/fonts/Pretendard-Regular.otf'),
+    'Pretendard-Medium': require('./assets/fonts/Pretendard-Medium.otf'),
+    'Pretendard-Bold': require('./assets/fonts/Pretendard-Bold.otf'),
+    'Pretendard-ExtraBold': require('./assets/fonts/Pretendard-ExtraBold.otf'),
+    'Pretendard-Black': require('./assets/fonts/Pretendard-Black.otf'),
   })
   useEffect(() => {
     if (!fontsLoaded) return
     const TextAny = Text as unknown as { defaultProps?: { style?: unknown } }
     TextAny.defaultProps = TextAny.defaultProps ?? {}
-    TextAny.defaultProps.style = [{ fontFamily: 'NotoSansKR_400Regular' }, TextAny.defaultProps.style]
+    TextAny.defaultProps.style = [{ fontFamily: 'Pretendard-Regular' }, TextAny.defaultProps.style]
     const InputAny = TextInput as unknown as { defaultProps?: { style?: unknown } }
     InputAny.defaultProps = InputAny.defaultProps ?? {}
-    InputAny.defaultProps.style = [{ fontFamily: 'NotoSansKR_400Regular' }, InputAny.defaultProps.style]
+    InputAny.defaultProps.style = [{ fontFamily: 'Pretendard-Regular' }, InputAny.defaultProps.style]
   }, [fontsLoaded])
 
   const [state, setState] = useState<BudgetState>(initialState)
@@ -1549,12 +1589,14 @@ export default function App() {
       category,
       createdAt: new Date().toISOString(),
     }
+    if (!reduceMotion) LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
     setState(prev => stateAfterAddExpense(prev, record))
     hapticSuccess()
     return true
   }
 
   function deleteExpense(id: string) {
+    if (!reduceMotion) LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
     setState(prev => stateAfterDeleteExpense(prev, id))
   }
 
@@ -2321,7 +2363,17 @@ export default function App() {
             </Text>
           </View>
           <View style={styles.setupQuestionShell}>
-            <Text style={styles.setupProgress}>{Math.min(setupStep + 1, totalSetupSteps)} / {totalSetupSteps}</Text>
+            <View style={styles.setupProgressRow}>
+              <Text style={styles.setupProgress}>{Math.min(setupStep + 1, totalSetupSteps)} / {totalSetupSteps}</Text>
+              <View style={styles.setupProgressTrack}>
+                <View
+                  style={[
+                    styles.setupProgressFill,
+                    { width: `${Math.min(((setupStep + 1) / totalSetupSteps) * 100, 100)}%` },
+                  ]}
+                />
+              </View>
+            </View>
             {renderSetupBody()}
           </View>
 
@@ -2900,11 +2952,7 @@ export default function App() {
           behavior={Platform.OS === 'ios' ? loaded && !state.setupComplete ? 'height' : 'padding' : undefined}
           keyboardVerticalOffset={loaded && !state.setupComplete ? 0 : 8}
         >
-          {!loaded && (
-            <View style={styles.loading}>
-              <Text style={styles.emptyText}>불러오는 중입니다.</Text>
-            </View>
-          )}
+          {!loaded && <SkeletonHome />}
           {loaded && !state.setupComplete && renderSetup()}
           {loaded && state.setupComplete && tab === 'home' && renderHome()}
           {loaded && state.setupComplete && tab === 'calendar' && renderCalendar()}
@@ -3195,18 +3243,37 @@ export default function App() {
                         </Text>
                       </View>
                       <Text style={styles.helperText}>{reportSnapshot.startDate} ~ {reportSnapshot.endDate}</Text>
-                      {CATEGORIES.map(category => {
-                        const planned = reportSnapshot.envelopePlan.find(item => item.category === category)?.limit ?? 0
-                        const actual = reportSnapshot.actualByCategory.find(item => item.category === category)?.amount ?? 0
-                        return (
-                          <BreakdownRow
-                            key={category}
-                            label={category}
-                            value={`계획 ${money(planned)} · 실제 ${money(actual)}`}
-                            tone={actual > planned ? 'minus' : 'plus'}
-                          />
-                        )
-                      })}
+                      {(() => {
+                        const rows = CATEGORIES.map(category => {
+                          const planned = reportSnapshot.envelopePlan.find(item => item.category === category)?.limit ?? 0
+                          const actual = reportSnapshot.actualByCategory.find(item => item.category === category)?.amount ?? 0
+                          return { category, planned, actual }
+                        })
+                        const maxValue = Math.max(1, ...rows.map(r => Math.max(r.planned, r.actual)))
+                        return rows.map(({ category, planned, actual }) => {
+                          const over = actual > planned
+                          const plannedPct = (planned / maxValue) * 100
+                          const actualPct = (actual / maxValue) * 100
+                          const Icon = CATEGORY_ICONS[category]
+                          return (
+                            <View key={category} style={styles.reportChartRow}>
+                              <View style={styles.reportChartHeader}>
+                                <View style={styles.reportChartLabelRow}>
+                                  <Icon size={14} color={colors.muted} strokeWidth={2} />
+                                  <Text style={styles.reportChartLabel}>{category}</Text>
+                                </View>
+                                <Text style={[styles.reportChartValue, over && styles.dangerText]}>
+                                  {money(actual)} / {money(planned)}
+                                </Text>
+                              </View>
+                              <View style={styles.reportChartTrack}>
+                                <View style={[styles.reportChartPlannedBar, { width: `${plannedPct}%` }]} />
+                                <View style={[styles.reportChartActualBar, { width: `${actualPct}%`, backgroundColor: over ? colors.danger : colors.teal }]} />
+                              </View>
+                            </View>
+                          )
+                        })
+                      })()}
                     <Text style={styles.sectionTitle}>다음 구간 예산</Text>
                     {state.envelopes.map(envelope => (
                       <View key={envelope.id} style={styles.envelopeEditRow}>
@@ -3257,7 +3324,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  appName: { fontSize: 20, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
+  appName: { fontSize: 20, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
   dateText: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '700' },
   body: { flex: 1 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
@@ -3271,7 +3338,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 20,
   },
-  setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   setupCopy: { marginTop: 8, color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
   setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingBottom: 28 },
   setupIntro: {
@@ -3285,9 +3352,12 @@ const styles = StyleSheet.create({
   setupIntroTitle: { color: colors.teal, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   setupIntroCopy: { color: colors.muted, fontSize: 13, lineHeight: 20, fontWeight: '500' },
   setupQuestionShell: { gap: 18 },
-  setupProgress: { alignSelf: 'flex-start', color: colors.muted, backgroundColor: colors.surface, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 4, fontSize: 12, fontWeight: '800' },
+  setupProgressRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  setupProgress: { color: colors.muted, fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'], minWidth: 40 },
+  setupProgressTrack: { flex: 1, height: 6, borderRadius: 999, backgroundColor: colors.border, overflow: 'hidden' },
+  setupProgressFill: { height: '100%', borderRadius: 999, backgroundColor: colors.teal },
   setupSingleQuestion: { gap: 12 },
-  setupQuestionTitle: { color: colors.text, fontSize: 28, lineHeight: 36, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  setupQuestionTitle: { color: colors.text, fontSize: 28, lineHeight: 36, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   setupQuestionCopy: { color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
   setupExampleText: { color: colors.muted, fontSize: 13, lineHeight: 20, fontWeight: '600', fontStyle: 'italic' },
   setupNavRow: { flexDirection: 'row', gap: 10 },
@@ -3301,7 +3371,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     backgroundColor: colors.teal,
   },
-  setupPrimaryButtonText: { color: colors.surface, fontSize: 15, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  setupPrimaryButtonText: { color: colors.surface, fontSize: 15, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   questionCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -3333,7 +3403,7 @@ const styles = StyleSheet.create({
   },
   eyebrow: { fontSize: 12, color: colors.tealDark, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
   heroTitle: { marginTop: 8, fontSize: 14, color: colors.muted, fontWeight: '700' },
-  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900', fontFamily: 'NotoSansKR_900Black', fontVariant: ['tabular-nums'] },
+  heroMoney: { marginTop: 4, fontSize: 36, color: colors.text, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'] },
   modePill: {
     alignSelf: 'flex-start',
     marginTop: 12,
@@ -3362,7 +3432,7 @@ const styles = StyleSheet.create({
   incomePromptTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
   incomePromptCopy: { marginTop: 4, color: colors.muted, fontSize: 12, lineHeight: 18, fontWeight: '600' },
   incomePromptButton: { borderRadius: 10, backgroundColor: colors.text, paddingHorizontal: 16, paddingVertical: 12, minHeight: 44, justifyContent: 'center' },
-  incomePromptButtonText: { color: colors.surface, fontSize: 13, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  incomePromptButtonText: { color: colors.surface, fontSize: 13, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   quickCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -3380,7 +3450,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { fontSize: 16, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
+  sectionTitle: { fontSize: 16, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
   helperText: { marginTop: -4, color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '500' },
   breakdownBox: {
     borderWidth: 1,
@@ -3482,7 +3552,7 @@ const styles = StyleSheet.create({
   },
   primaryButtonMuted: { backgroundColor: colors.muted },
   primaryButtonMutedText: { color: colors.subtle },
-  primaryButtonText: { color: colors.surface, fontSize: 15, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  primaryButtonText: { color: colors.surface, fontSize: 15, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   secondaryButton: {
     borderWidth: 1,
     borderColor: colors.borderMd,
@@ -3507,7 +3577,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   suggestionTitle: { color: colors.muted, fontSize: 12, fontWeight: '700' },
-  suggestionMoney: { color: colors.text, fontSize: 28, fontWeight: '900', fontFamily: 'NotoSansKR_900Black', fontVariant: ['tabular-nums'] },
+  suggestionMoney: { color: colors.text, fontSize: 28, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'] },
   suggestionCopy: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '500' },
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   resultEditRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
@@ -3520,7 +3590,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   coachEyebrow: { color: colors.muted, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  coachQuestion: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold' },
+  coachQuestion: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   coachDescription: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '500' },
   coachOptionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   coachOption: {
@@ -3556,10 +3626,10 @@ const styles = StyleSheet.create({
     borderColor: colors.overBorder,
     backgroundColor: colors.overBg,
   },
-  envelopeStatusName: { color: colors.text, fontSize: 15, fontWeight: '700', fontFamily: 'NotoSansKR_700Bold' },
+  envelopeStatusName: { color: colors.text, fontSize: 15, fontWeight: '700', fontFamily: 'Pretendard-Bold' },
   envelopeStatusMeta: { marginTop: 4, color: colors.muted, fontSize: 12, fontWeight: '500' },
   envelopeStatusRight: { alignItems: 'flex-end' },
-  envelopeStatusRemaining: { color: colors.text, fontSize: 16, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', fontVariant: ['tabular-nums'] },
+  envelopeStatusRemaining: { color: colors.text, fontSize: 16, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', fontVariant: ['tabular-nums'] },
   envelopeWarningText: { marginTop: 4, color: colors.warning, fontSize: 12, fontWeight: '700' },
   expenseRow: {
     flexDirection: 'row',
@@ -3574,7 +3644,7 @@ const styles = StyleSheet.create({
   },
   expenseMemo: { fontSize: 15, fontWeight: '700', color: colors.text },
   expenseSub: { marginTop: 2, fontSize: 12, color: colors.muted, fontWeight: '500' },
-  expenseAmount: { fontSize: 15, fontWeight: '700', fontFamily: 'NotoSansKR_700Bold', color: colors.text, fontVariant: ['tabular-nums'] },
+  expenseAmount: { fontSize: 15, fontWeight: '700', fontFamily: 'Pretendard-Bold', color: colors.text, fontVariant: ['tabular-nums'] },
   deleteButton: { paddingHorizontal: 12, paddingVertical: 12, minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
   modalCloseButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   editText: { fontSize: 12, color: colors.tealDark, fontWeight: '700' },
@@ -3603,9 +3673,17 @@ const styles = StyleSheet.create({
   reportHeroSuccess: { backgroundColor: colors.successBg, borderWidth: 1, borderColor: colors.underBorder },
   reportHeroOver: { backgroundColor: colors.dangerBg, borderWidth: 1, borderColor: colors.overBorder },
   reportHeroLabel: { fontSize: 13, color: colors.muted, fontWeight: '700' },
-  reportHeroValue: { fontSize: 28, fontWeight: '900', fontFamily: 'NotoSansKR_900Black', fontVariant: ['tabular-nums'] },
+  reportHeroValue: { fontSize: 28, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'] },
   reportHeroValueSuccess: { color: colors.success },
   reportHeroValueOver: { color: colors.danger },
+  reportChartRow: { gap: 6, marginVertical: 4 },
+  reportChartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  reportChartLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  reportChartLabel: { fontSize: 13, color: colors.text, fontWeight: '600' },
+  reportChartValue: { fontSize: 12, color: colors.muted, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  reportChartTrack: { height: 12, borderRadius: 999, backgroundColor: colors.bg, overflow: 'hidden', position: 'relative' },
+  reportChartPlannedBar: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: colors.border, borderRadius: 999 },
+  reportChartActualBar: { position: 'absolute', left: 0, top: 2, bottom: 2, borderRadius: 999 },
   emptyIconCircle: {
     width: 56,
     height: 56,
@@ -3634,7 +3712,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     paddingBottom: 16,
   },
-  title: { marginTop: 8, fontSize: 24, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
+  title: { marginTop: 8, fontSize: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
   autoSaveNotice: {
     alignSelf: 'flex-start',
     marginTop: 8,
@@ -3868,5 +3946,5 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   modalTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', fontFamily: 'NotoSansKR_800ExtraBold', color: colors.text },
+  modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
 })
