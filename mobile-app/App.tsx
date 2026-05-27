@@ -123,7 +123,6 @@ type BudgetState = {
   currentBalance: number
   savingEnabled: boolean
   savingGoal: number
-  savingDeadline: number
   lifestyleType: LifestyleType
   weekendMultiplier?: number
   incomes: IncomeItem[]
@@ -223,7 +222,6 @@ const initialState: BudgetState = {
   currentBalance: 0,
   savingEnabled: false,
   savingGoal: 0,
-  savingDeadline: 25,
   lifestyleType: 'worker',
   incomes: [],
   noIncomeMode: 'openEnded',
@@ -685,7 +683,6 @@ export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
       ? sanitizeAmount(saved.savingGoal) > 0
       : Boolean(saved.savingEnabled),
     savingGoal: sanitizeAmount(saved.savingGoal),
-    savingDeadline: clampDay(Number(saved.savingDeadline) || initialState.savingDeadline),
     lifestyleType: LIFESTYLE_OPTIONS.some(option => option.key === saved.lifestyleType)
       ? saved.lifestyleType as LifestyleType
       : initialState.lifestyleType,
@@ -844,6 +841,7 @@ function roundToThousand(value: number) {
 }
 
 function floorToThousand(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0
   return Math.floor(value / 1000) * 1000
 }
 
@@ -861,7 +859,10 @@ export function suggestSavingBreakdown(state: BudgetState, profile: BudgetCoachP
   const monthlyFixed = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
   const monthlyReserves = (state.datePoolMonthly || 0) + (state.eventReserveMonthly || 0)
 
-  const { end } = periodBounds(state, today)
+  const { end, overdue } = periodBounds(state, today)
+  if (overdue) {
+    return { firstPeriod: 0, perCycle: 0, monthly: 0, monthlySpending, periodDays: 0 }
+  }
   const periodDays = Math.max(1, daysBetween(today, end))
   const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
 
@@ -1049,7 +1050,7 @@ export function calculateEnvelopeStatus(state: BudgetState, date: Date) {
 }
 
 function recurringAmountBetween(
-  items: ({ day: number; amount: number } | IncomeItem)[],
+  items: { day: number; amount: number }[],
   startDate: Date,
   endDate: Date,
   includeEndDate = true,
@@ -1064,12 +1065,10 @@ function recurringAmountBetween(
   for (let monthOffset = 0; monthOffset <= monthSpan; monthOffset += 1) {
     const cursor = new Date(startDate.getFullYear(), startDate.getMonth() + monthOffset, 1)
     items.forEach(item => {
-      const itemDay = 'day' in item ? item.day : incomeDay(item)
-      const itemAmount = 'day' in item ? item.amount : incomePlanningAmount(item)
-      const itemDate = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), itemDay)
+      const itemDate = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), item.day)
       const afterStart = isAfterOrSameDate(itemDate, startDate)
       const beforeEnd = includeEndDate ? isBeforeOrSameDate(itemDate, endDate) : isBeforeDate(itemDate, endDate)
-      if (afterStart && beforeEnd) sum += itemAmount
+      if (afterStart && beforeEnd) sum += item.amount
     })
   }
   return sum
@@ -2900,7 +2899,6 @@ export default function App() {
                   <Text style={styles.suggestionCopy}>저축 OFF — 모든 금액이 일일 예산으로 굴러갑니다.</Text>
                 )}
               </View>
-              <DayField label="저축 마감일" value={state.savingDeadline} onChange={value => patch({ savingDeadline: value })} />
               <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
             </View>
           )
