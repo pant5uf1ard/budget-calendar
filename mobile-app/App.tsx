@@ -838,15 +838,29 @@ function roundToTenThousand(value: number) {
   return Math.round(value / 10000) * 10000
 }
 
-export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProfile) {
-  const incomeTotal = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
-  const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
-  const available = Math.max(state.currentBalance + incomeTotal - fixedTotal, 0)
-  let ratio = profile.moneyStyle === 'tight' ? 0.38 : profile.moneyStyle === 'loose' ? 0.18 : 0.3
-  if (profile.socialFrequency >= 10) ratio -= 0.05
-  if (profile.shoppingMonthly >= 300000) ratio -= 0.05
-  if (profile.lunch === 'buy' || profile.lunch === 'delivery' || profile.dinner === 'buy') ratio -= 0.03
-  return Math.max(roundToTenThousand(available * Math.max(ratio, 0.08)), 0)
+export function suggestSavingBreakdown(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
+  const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
+  const monthlyLivingPool = CATEGORIES.reduce((sum, category) => sum + Math.max(0, monthlyBudgets[category] ?? 0), 0)
+  const dailyLiving = monthlyLivingPool / 30
+  const monthlyIncome = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
+  const monthlyFixed = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
+  const monthlyReserves = (state.datePoolMonthly || 0) + (state.eventReserveMonthly || 0)
+
+  const { end } = periodBounds(state, today)
+  const periodDays = Math.max(1, daysBetween(today, end))
+  const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
+  const expectedSpend = dailyLiving * periodDays + fixedForPeriod
+
+  const firstPeriod = Math.max(0, roundToTenThousand(state.currentBalance - expectedSpend))
+  const monthly = Math.max(0, roundToTenThousand(monthlyIncome - monthlyFixed - monthlyLivingPool - monthlyReserves))
+  const perCycle = Math.max(0, roundToTenThousand(monthly * (periodDays / 30)))
+
+  return { firstPeriod, perCycle, monthly, monthlyLivingPool, periodDays }
+}
+
+export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
+  const breakdown = suggestSavingBreakdown(state, profile, today)
+  return state.periods.length === 0 ? breakdown.firstPeriod : breakdown.perCycle
 }
 
 export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
@@ -1180,8 +1194,12 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
     transfers: state.currentTransfers,
     actualByCategory,
   }
-  const nextState = { ...state, currentBalance: newBalance, currentPeriodStart: endKey }
-  const newEnvelopes = suggestEnvelopeBudgets(nextState, state.coachProfile)
+  const periodsAfter = [...state.periods, snapshot]
+  const nextStateForRecalc = { ...state, currentBalance: newBalance, currentPeriodStart: endKey, periods: periodsAfter }
+  const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, today)
+  const newSavingGoal = state.savingEnabled ? savingBreakdown.perCycle : 0
+  const stateAfterSaving = { ...nextStateForRecalc, savingGoal: newSavingGoal }
+  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile)
   return {
     ...state,
     currentBalance: newBalance,
@@ -1189,8 +1207,9 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
     currentPeriodStartingBalance: newBalance,
     currentPeriodPlan: newEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
     currentTransfers: [],
-    periods: [...state.periods, snapshot],
+    periods: periodsAfter,
     envelopes: newEnvelopes,
+    savingGoal: newSavingGoal,
   }
 }
 
@@ -1449,7 +1468,6 @@ export default function App() {
   const [setupReturnStep, setSetupReturnStep] = useState<number | null>(null)
   const [balanceHelperOpen, setBalanceHelperOpen] = useState(false)
   const [helperAccountBalance, setHelperAccountBalance] = useState(0)
-  const [helperSaving, setHelperSaving] = useState(0)
   const [helperCommitted, setHelperCommitted] = useState(0)
   const resultSeededRef = useRef(false)
   const [keyboardVisible, setKeyboardVisible] = useState(false)
@@ -1798,7 +1816,7 @@ export default function App() {
   }
 
   function confirmIncomeBalance() {
-    Alert.alert('입금 확인', '입금 포함 지금 잔액으로 새 구간을 시작할까요?', [
+    Alert.alert('입금 확인', '이 잔액으로 다음 입금까지의 예산을 다시 잡을까요?', [
       { text: '취소', style: 'cancel' },
       {
         text: '확정',
@@ -1858,10 +1876,11 @@ export default function App() {
     const savingStep = 11
     const resultStep = 12
     const totalSetupSteps = TOTAL_SETUP_STEPS
-    const suggestedSaving = state.savingEnabled ? suggestSavingAmount(state, coachProfile) : 0
+    const savingBreakdown = suggestSavingBreakdown(state, coachProfile, today)
+    const suggestedSaving = state.savingEnabled ? savingBreakdown.firstPeriod : 0
     const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
     const envelopeTotal = state.envelopes.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
-    const helperFreeBalance = Math.max(helperAccountBalance - helperSaving - helperCommitted, 0)
+    const helperFreeBalance = Math.max(helperAccountBalance - helperCommitted, 0)
     const monthlyBudgets = monthlyEnvelopeBudgets(state, coachProfile)
     const monthlyBudgetTotal = CATEGORIES.reduce((sum, category) => sum + monthlyBudgets[category], 0)
     const monthlyBudgetPool = monthlyLivingBudget(state)
@@ -2024,18 +2043,17 @@ export default function App() {
       if (setupStep === 0) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>지금 생활비로 쓸 수 있는 돈이{"\n"}얼마예요?</Text>
-            <Text style={styles.setupQuestionCopy}>통장 전체가 아니라 이번에 자유롭게 쓸 부분만. 저축할 돈·카드값·이미 약속된 돈은 빼고 적으세요.</Text>
-            <MoneyInput label="자유 생활비 잔액" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
+            <Text style={styles.setupQuestionTitle}>지금 통장에 있는 돈이{"\n"}얼마예요?</Text>
+            <Text style={styles.setupQuestionCopy}>생활비로 쓸 통장 잔액 그대로 적어주세요. 저축은 마지막 단계에서 코치가 자동으로 떼어드려요.</Text>
+            <MoneyInput label="통장 잔액" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
             <TouchableOpacity style={styles.backButton} onPress={() => setBalanceHelperOpen(prev => !prev)}>
-              <Text style={styles.addText}>헷갈리면 도우미 펼치기</Text>
+              <Text style={styles.addText}>카드값·약속된 돈이 있다면</Text>
             </TouchableOpacity>
             {balanceHelperOpen && (
               <View style={styles.suggestionCard}>
                 <MoneyInput label="통장 전체 잔액" value={helperAccountBalance} onChange={setHelperAccountBalance} />
-                <MoneyInput label="저축할 돈" value={helperSaving} onChange={setHelperSaving} />
                 <MoneyInput label="카드값·약속" value={helperCommitted} onChange={setHelperCommitted} />
-                <BreakdownRow label="자유 생활비" value={money(helperFreeBalance)} tone="plus" />
+                <BreakdownRow label="이번 입금까지 쓸 돈" value={money(helperFreeBalance)} tone="plus" />
                 <TouchableOpacity
                   style={styles.setupPrimaryButton}
                   onPress={() => {
@@ -2108,7 +2126,7 @@ export default function App() {
             ) : (
               <>
                 <Text style={styles.setupQuestionTitle}>{incomeSetupMode === 'regular' ? '돈은 언제, 얼마씩 들어와요?' : '최근 수입 패턴을 알려주세요'}</Text>
-                <Text style={styles.setupQuestionCopy}>금액은 비워도 됩니다. 이번 구간 계산에는 날짜만 사용해요.</Text>
+                <Text style={styles.setupQuestionCopy}>금액은 비워도 됩니다. 다음 입금까지 며칠인지 계산할 때만 써요.</Text>
                 {state.incomes.map(renderIncomeFields)}
                 {state.incomes.length === 0 && (
                   <View style={styles.emptyBox}><Text style={styles.emptyText}>수입 구조를 하나 이상 추가해주세요.</Text></View>
@@ -2186,7 +2204,7 @@ export default function App() {
         return (
           <View style={styles.setupSingleQuestion}>
             <Text style={styles.setupQuestionTitle}>매달 자동으로 떼둘 돈이 있어요?</Text>
-            <Text style={styles.setupQuestionCopy}>고정비·저축 외에 매달 같은 금액으로 빠지는 것들. 예산 가용 풀에서 미리 빠집니다.</Text>
+            <Text style={styles.setupQuestionCopy}>데이트 통장, 경조사처럼 매달 따로 묶어둘 돈이 있으면 적어요. 비워두면 모두 일일 예산에 포함돼요.</Text>
             <View style={styles.suggestionCard}>
               <View style={styles.switchRow}>
                 <View style={{ flex: 1 }}>
@@ -2313,7 +2331,8 @@ export default function App() {
                 const moneyStyle = value as BudgetCoachProfile['moneyStyle']
                 const nextProfile = { ...coachProfile, moneyStyle }
                 setCoachProfile(nextProfile)
-                patch({ savingEnabled: moneyStyle === 'tight', savingGoal: moneyStyle === 'tight' ? suggestSavingAmount(state, nextProfile) : 0 })
+                const nextBreakdown = suggestSavingBreakdown(state, nextProfile, today)
+                patch({ savingEnabled: moneyStyle === 'tight', savingGoal: moneyStyle === 'tight' ? nextBreakdown.firstPeriod : 0 })
               }}
             />
           </View>
@@ -2321,25 +2340,37 @@ export default function App() {
       }
 
       if (setupStep === savingStep) {
+        const breakdown = suggestSavingBreakdown(state, coachProfile, today)
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>저축도 챙길까요?</Text>
-            <Text style={styles.setupQuestionCopy}>지금은 안 챙겨도 돼요. 켜두면 매 구간 일정 금액을 먼저 떼두고 나머지로 하루한도를 잡아요.</Text>
+            <Text style={styles.setupQuestionTitle}>코치가 잡은 저축액</Text>
+            <Text style={styles.setupQuestionCopy}>지금까지 답한 내용으로 자동 계산했어요. 토글로 적용 여부만 정해주세요. 금액을 바꾸려면 코치를 다시 실행해요.</Text>
             <View style={styles.suggestionCard}>
               <View style={styles.switchRow}>
-                <Text style={styles.suggestionTitle}>다음 입금일까지 떼어둘 저축액</Text>
+                <Text style={styles.suggestionTitle}>저축 적용</Text>
                 <Switch
                   value={state.savingEnabled}
-                  onValueChange={enabled => patch({ savingEnabled: enabled, savingGoal: enabled ? state.savingGoal || suggestSavingAmount(state, coachProfile) : 0 })}
+                  onValueChange={enabled => patch({
+                    savingEnabled: enabled,
+                    savingGoal: enabled ? breakdown.firstPeriod : 0,
+                  })}
                   trackColor={{ false: colors.borderMd, true: colors.teal }}
                   thumbColor={colors.surface}
                   ios_backgroundColor={colors.borderMd}
                 />
               </View>
               {state.savingEnabled ? (
-                <MoneyInput label="다음 입금일까지 떼어둘 저축액" value={state.savingGoal || suggestSavingAmount(state, coachProfile)} onChange={value => patch({ savingGoal: value })} />
+                <View style={{ gap: 8 }}>
+                  <BreakdownRow label="이번 입금까지" value={money(breakdown.firstPeriod)} tone="plus" />
+                  <BreakdownRow label="다음 입금부터 매번" value={money(breakdown.perCycle)} tone="plus" />
+                  <BreakdownRow label="월 환산" value={money(breakdown.monthly)} />
+                  <Text style={styles.suggestionCopy}>
+                    이번 입금까지는 지금 통장 잔액에서 생활비를 빼고 남는 만큼 저축해요.{"\n"}
+                    다음 입금부터는 매 입금마다 같은 금액을 자동으로 떼둡니다.
+                  </Text>
+                </View>
               ) : (
-                <Text style={styles.suggestionCopy}>저축 OFF</Text>
+                <Text style={styles.suggestionCopy}>저축을 끄면 모든 금액을 일일 예산으로 굴려요. 언제든 다시 켤 수 있어요.</Text>
               )}
             </View>
           </View>
@@ -2349,10 +2380,10 @@ export default function App() {
       return (
         <View style={styles.setupSingleQuestion}>
           <Text style={styles.setupQuestionTitle}>이렇게 시작할게요</Text>
-          <Text style={styles.setupQuestionCopy}>입력한 값으로 이번 구간을 만들고, 예산은 바로 수정할 수 있어요.</Text>
+          <Text style={styles.setupQuestionCopy}>입력한 값으로 이번 입금까지의 예산을 만들어요. 봉투는 바로 수정할 수 있어요.</Text>
           <View style={styles.suggestionCard}>
             <BreakdownRow label="한 달 가용" value={money(monthlyBudgetPool)} tone="plus" />
-            <BreakdownRow label="이번 구간 예산 합" value={money(envelopeTotal)} tone="plus" />
+            <BreakdownRow label="이번 입금까지 예산 합" value={money(envelopeTotal)} tone="plus" />
             {monthlyBudgets.기타 < 10000 && (
               <Text style={styles.dangerText}>이 라이프엔 가용이 부족해요. 저축·데통 양보하거나 예산을 조정하세요.</Text>
             )}
@@ -2363,8 +2394,14 @@ export default function App() {
           <View style={styles.suggestionCard}>
             <BreakdownRow label="현재 잔액" value={money(state.currentBalance)} />
             <BreakdownRow label="다음 보충 시점" value={deriveModeLabel(state)} />
-            <BreakdownRow label="이번 구간 고정지출 합" value={money(fixedTotal)} />
-            <BreakdownRow label="자동 차감" value={`저축 ${state.savingEnabled ? money(state.savingGoal || suggestedSaving) : 'OFF'} / 데통 ${money(state.datePoolMonthly)} / 이벤트 ${money(state.eventReserveMonthly)}`} />
+            <BreakdownRow label="이번 입금까지 고정지출" value={money(fixedTotal)} />
+            <BreakdownRow
+              label="저축"
+              value={state.savingEnabled
+                ? `이번 ${money(savingBreakdown.firstPeriod)} · 다음부터 매 ${money(savingBreakdown.perCycle)} (월 ${money(savingBreakdown.monthly)})`
+                : 'OFF'}
+            />
+            <BreakdownRow label="자동 차감" value={`데통 ${money(state.datePoolMonthly)} / 이벤트 ${money(state.eventReserveMonthly)}`} />
             <View style={styles.breakdownDivider} />
             <BreakdownRow label="6개 예산 합" value={money(envelopeTotal)} tone="plus" />
           </View>
@@ -2384,7 +2421,7 @@ export default function App() {
                 />
               </View>
               <View style={styles.setupEnvelopeMoneyField}>
-                <Text style={styles.miniLabel}>구간 예산</Text>
+                <Text style={styles.miniLabel}>이번 입금까지</Text>
                 <TextInput
                   style={styles.input}
                   value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
@@ -2743,15 +2780,15 @@ export default function App() {
           <Text style={styles.title}>예산</Text>
         </View>
         <View style={styles.section}>
-          <Text style={styles.eyebrow}>이번 구간</Text>
+          <Text style={styles.eyebrow}>이번 입금까지</Text>
           <BreakdownRow label="총 예산" value={money(totalLimit)} tone="plus" />
-          <Text style={styles.emptyText}>구간 중엔 잠겨요. 옮기기로 조정하세요.</Text>
+          <Text style={styles.emptyText}>입금 중엔 잠겨요. 옮기기로 조정하세요.</Text>
         </View>
         <TouchableOpacity style={styles.primaryButton} onPress={() => setTransferOpen(true)}>
           <Text style={styles.primaryButtonText}>예산끼리 금액 옮기기</Text>
         </TouchableOpacity>
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>이번 구간 예산</Text>
+          <Text style={styles.sectionTitle}>이번 입금까지 예산</Text>
           {envelopeStatuses.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyText}>예산이 아직 없습니다.</Text>
@@ -2804,36 +2841,44 @@ export default function App() {
             <Text style={styles.autoSaveText}>변경사항은 자동으로 저장됩니다.</Text>
           </View>
         </View>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>생활비 기준</Text>
-          <MoneyInput label="지금 당장 생활비로 써도 되는 돈" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
-          <View style={styles.savingRow}>
-            <View style={styles.savingDayField}>
+        {(() => {
+          const settingsBreakdown = suggestSavingBreakdown(state, coachProfile, today)
+          return (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>생활비 기준</Text>
+              <MoneyInput label="지금 당장 생활비로 써도 되는 돈" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
+              <View style={styles.suggestionCard}>
+                <View style={styles.switchRow}>
+                  <Text style={styles.suggestionTitle}>저축 자동 적용</Text>
+                  <Switch
+                    value={state.savingEnabled}
+                    onValueChange={enabled => patch({
+                      savingEnabled: enabled,
+                      savingGoal: enabled
+                        ? (state.periods.length === 0 ? settingsBreakdown.firstPeriod : settingsBreakdown.perCycle)
+                        : 0,
+                    })}
+                    trackColor={{ false: colors.borderMd, true: colors.teal }}
+                    thumbColor={colors.surface}
+                    ios_backgroundColor={colors.borderMd}
+                  />
+                </View>
+                {state.savingEnabled ? (
+                  <View style={{ gap: 8 }}>
+                    <BreakdownRow label="이번 입금까지" value={money(settingsBreakdown.firstPeriod)} tone="plus" />
+                    <BreakdownRow label="다음 입금부터 매번" value={money(settingsBreakdown.perCycle)} tone="plus" />
+                    <BreakdownRow label="월 환산" value={money(settingsBreakdown.monthly)} />
+                    <Text style={styles.suggestionCopy}>코치 답변을 바탕으로 자동 계산해요. 금액을 바꾸려면 "온보딩 다시 시작"을 눌러 답을 새로 해주세요.</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.suggestionCopy}>저축 OFF — 모든 금액이 일일 예산으로 굴러갑니다.</Text>
+                )}
+              </View>
               <DayField label="저축 마감일" value={state.savingDeadline} onChange={value => patch({ savingDeadline: value })} />
+              <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
             </View>
-            <View style={{ flex: 1 }}>
-              <MoneyInput label="저축 목표 금액" value={state.savingGoal} onChange={value => patch({ savingGoal: value })} />
-            </View>
-          </View>
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => {
-              const suggested = suggestSavingAmount(state, coachProfile)
-              hapticSuccess()
-              patch({
-                savingEnabled: suggested > 0,
-                savingGoal: suggested,
-                envelopes: suggestEnvelopeBudgets({ ...state, savingEnabled: suggested > 0, savingGoal: suggested }, coachProfile),
-              })
-              Alert.alert('저축 추천', `코치 답변을 바탕으로 ${money(suggested)}을 저축으로 떼두는 걸 추천해요. 봉투도 다시 계산했어요.`)
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="저축 추천 적용"
-          >
-            <Text style={styles.secondaryButtonText}>코치 추천 저축액 적용</Text>
-          </TouchableOpacity>
-          <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
-        </View>
+          )
+        })()}
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -3296,13 +3341,13 @@ export default function App() {
                 <View style={styles.modalTop}>
                   <View>
                     <Text style={styles.eyebrow}>Period report</Text>
-                    <Text style={styles.modalTitle}>지난 구간 정리</Text>
+                    <Text style={styles.modalTitle}>지난 입금 정리</Text>
                   </View>
                   <TouchableOpacity
                     onPress={closeReportModal}
                     style={styles.modalCloseButton}
                     accessibilityRole="button"
-                    accessibilityLabel="구간 정리 닫기"
+                    accessibilityLabel="입금 정리 닫기"
                   >
                     <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
@@ -3354,7 +3399,7 @@ export default function App() {
                           )
                         })
                       })()}
-                    <Text style={styles.sectionTitle}>다음 구간 예산</Text>
+                    <Text style={styles.sectionTitle}>다음 입금까지 예산</Text>
                     {state.envelopes.map(envelope => (
                       <View key={envelope.id} style={styles.envelopeEditRow}>
                         <Text style={[styles.envelopeStatusName, { flex: 1 }]}>{envelope.name}</Text>
