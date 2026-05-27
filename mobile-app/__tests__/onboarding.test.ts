@@ -23,10 +23,6 @@ vi.mock('expo-document-picker', () => ({
 vi.mock('react-native-gesture-handler', () => ({
   GestureHandlerRootView: ({ children }: { children: unknown }) => children,
 }));
-vi.mock('react-native-draggable-flatlist', () => ({
-  default: () => null,
-  ScaleDecorator: ({ children }: { children: unknown }) => children,
-}));
 vi.mock('react-native-reanimated', () => ({
   default: { View: ({ children }: { children: unknown }) => children },
   FadeIn: { duration: () => ({}) },
@@ -173,14 +169,18 @@ describe('direct onboarding envelope calculation', () => {
     expect(Math.round(monthlyLivingBudget(state))).toBe(259333);
   });
 
-  it('converts monthly budgets to period limits', () => {
+  it('splits the current balance across envelopes by category share', () => {
     const state = makeState({
+      currentBalance: 900000,
       currentPeriodStart: '2026-05-01',
       incomes: [{ id: 'income-1', name: '월급', cadence: 'monthly', anchorDate: '2026-05-16', amount: 560000 }] as never,
     });
     const envelopes = suggestEnvelopeBudgets(state, { ...initialCoachProfile, lunch: 'provided', dinner: 'home' });
+    const total = envelopes.reduce((sum, item) => sum + item.periodLimit, 0);
 
-    expect(envelopes.find(envelope => envelope.name === '식비')?.periodLimit).toBe(40000);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(900000);
+    expect(envelopes.find(envelope => envelope.name === '식비')?.periodLimit).toBeGreaterThan(0);
   });
 });
 

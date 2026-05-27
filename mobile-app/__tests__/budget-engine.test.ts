@@ -28,10 +28,6 @@ vi.mock('expo-document-picker', () => ({
 vi.mock('react-native-gesture-handler', () => ({
   GestureHandlerRootView: ({ children }: { children: unknown }) => children,
 }));
-vi.mock('react-native-draggable-flatlist', () => ({
-  default: () => null,
-  ScaleDecorator: ({ children }: { children: unknown }) => children,
-}));
 vi.mock('react-native-reanimated', () => ({
   default: { View: ({ children }: { children: unknown }) => children },
   FadeIn: { duration: () => ({}) },

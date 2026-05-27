@@ -7,7 +7,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
-import DraggableFlatList, { RenderItemParams, ScaleDecorator } from 'react-native-draggable-flatlist'
 import Reanimated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useFonts } from 'expo-font'
@@ -884,13 +883,19 @@ export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachP
 
 export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
   const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
-  const { start, end } = periodBounds(state, new Date())
+  const monthlyTotal = Object.values(monthlyBudgets).reduce((sum, value) => sum + value, 0)
+  const today = new Date()
+  const { start, end } = periodBounds(state, today)
   const periodDays = Math.max(1, daysBetween(start, end))
-  const periodRatio = periodDays / 30
-  return state.envelopes.map(envelope => ({
-    ...envelope,
-    periodLimit: roundToThousand(monthlyBudgets[envelope.name] * periodRatio),
-  }))
+  const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
+  const savingForPeriod = state.savingEnabled ? state.savingGoal * (periodDays / 30) : 0
+  const livingPool = Math.max(state.currentBalance - fixedForPeriod - savingForPeriod, 0)
+  return state.envelopes.map(envelope => {
+    const share = monthlyTotal > 0
+      ? (monthlyBudgets[envelope.name] / monthlyTotal) * livingPool
+      : livingPool / Math.max(state.envelopes.length, 1)
+    return { ...envelope, periodLimit: roundToThousand(share) }
+  })
 }
 
 export function initializeSetupState(state: BudgetState, profile: BudgetCoachProfile, today: Date): BudgetState {
@@ -1055,7 +1060,12 @@ function weightForDate(date: Date, lifestyleType: LifestyleType) {
   return isWeekend(date) ? option.weekendWeight : option.weekdayWeight
 }
 
-function allowanceForDate(date: Date, plan: ReturnType<typeof calculatePlan>, lifestyleType: LifestyleType) {
+function allowanceForDate(date: Date, plan: ReturnType<typeof calculatePlan>, lifestyleType: LifestyleType, today: Date) {
+  const dateKey = isoDate(date)
+  const todayKey = isoDate(today)
+  if (dateKey > todayKey) {
+    return plan.futureDailyUnit * weightForDate(date, lifestyleType)
+  }
   return plan.dailyUnit * weightForDate(date, lifestyleType)
 }
 
@@ -1084,6 +1094,7 @@ export function calculatePlan(state: BudgetState, today: Date) {
       daysUntilEnd: 0,
       overdue,
       dailyUnit: 0,
+      futureDailyUnit: 0,
       todayAllowance: 0,
       todaySpent,
       todayRemaining: -todaySpent,
@@ -1104,6 +1115,9 @@ export function calculatePlan(state: BudgetState, today: Date) {
   const dailyUnit = remainingWeightedDays > 0 ? basePool / remainingWeightedDays : 0
   const todayWeight = weightForDate(today, state.lifestyleType)
   const todayAllowance = dailyUnit * todayWeight
+  const futureWeightedDays = Math.max(0, remainingWeightedDays - todayWeight)
+  const futureBasePool = Math.max(0, state.currentBalance - fixedRemaining - savingReserved)
+  const futureDailyUnit = futureWeightedDays > 0 ? futureBasePool / futureWeightedDays : 0
 
   return {
     periodStart: start,
@@ -1111,6 +1125,7 @@ export function calculatePlan(state: BudgetState, today: Date) {
     daysUntilEnd: Math.max(0, daysBetween(today, end)),
     overdue,
     dailyUnit,
+    futureDailyUnit,
     todayAllowance,
     todaySpent,
     todayRemaining: todayAllowance - todaySpent,
@@ -1177,7 +1192,7 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
     transfers: state.currentTransfers,
     actualByCategory,
   }
-  const nextState = { ...state, currentBalance: newBalance }
+  const nextState = { ...state, currentBalance: newBalance, currentPeriodStart: endKey }
   const newEnvelopes = suggestEnvelopeBudgets(nextState, state.coachProfile)
   return {
     ...state,
@@ -2481,7 +2496,6 @@ export default function App() {
           <View style={styles.incomePrompt}>
             <View style={{ flex: 1 }}>
               <Text style={styles.incomePromptTitle}>{state.incomes[0]?.name || '수입'} 입금 들어왔어요?</Text>
-              <Text style={styles.incomePromptCopy}>확정하면 지난 구간을 닫고 새 구간 예산을 다시 잡습니다.</Text>
             </View>
             <TouchableOpacity style={styles.incomePromptButton} onPress={openIncomeConfirm}>
               <Text style={styles.incomePromptButtonText}>확정</Text>
@@ -2695,7 +2709,7 @@ export default function App() {
             const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day)
             const total = sumForDate(state, dateKey)
             const fixedDue = state.fixedItems.filter(item => item.day === day && item.amount > 0)
-            const allowance = allowanceForDate(date, calendarPlan, state.lifestyleType)
+            const allowance = allowanceForDate(date, calendarPlan, state.lifestyleType, today)
             const tone = dayTone(state, dateKey, total, allowance)
             const isToday = dateKey === todayKey
             const isPast = dateKey < todayKey
@@ -2836,6 +2850,23 @@ export default function App() {
               <MoneyInput label="저축 목표 금액" value={state.savingGoal} onChange={value => patch({ savingGoal: value })} />
             </View>
           </View>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => {
+              const suggested = suggestSavingAmount(state, coachProfile)
+              hapticSuccess()
+              patch({
+                savingEnabled: suggested > 0,
+                savingGoal: suggested,
+                envelopes: suggestEnvelopeBudgets({ ...state, savingEnabled: suggested > 0, savingGoal: suggested }, coachProfile),
+              })
+              Alert.alert('저축 추천', `코치 답변을 바탕으로 ${money(suggested)}을 저축으로 떼두는 걸 추천해요. 봉투도 다시 계산했어요.`)
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="저축 추천 적용"
+          >
+            <Text style={styles.secondaryButtonText}>코치 추천 저축액 적용</Text>
+          </TouchableOpacity>
           <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
         </View>
 
@@ -2885,7 +2916,7 @@ export default function App() {
                       style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
                       onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
                     >
-                      <Text style={[styles.chipText, item.cadence === option.key && styles.chipTextActive]}>{option.label}</Text>
+                      <Text style={[styles.chipText, styles.cadenceChipText, item.cadence === option.key && styles.chipTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{option.label}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -2969,52 +3000,6 @@ export default function App() {
               ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
             </View>
           ))}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>이번 구간 예산</Text>
-          <Text style={styles.helperText}>이름을 길게 눌러 순서를 바꿔보세요. 예산을 수정하면 다음 지출부터 반영됩니다.</Text>
-          <DraggableFlatList
-            data={state.envelopes}
-            keyExtractor={envelope => envelope.id}
-            onDragBegin={hapticLight}
-            onDragEnd={({ data }) => { hapticMedium(); patch({ envelopes: data }) }}
-            scrollEnabled={false}
-            activationDistance={8}
-            renderItem={({ item: envelope, drag, isActive }: RenderItemParams<typeof state.envelopes[number]>) => (
-              <ScaleDecorator>
-                <View style={[styles.envelopeEditRow, styles.envelopeDragRow, isActive && styles.envelopeDragActive]}>
-                  <TouchableOpacity
-                    onLongPress={drag}
-                    delayLongPress={150}
-                    style={styles.dragHandle}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${envelope.name} 순서 변경`}
-                  >
-                    <IconOther size={18} color={colors.muted} strokeWidth={2} />
-                  </TouchableOpacity>
-                  <TextInput
-                    style={[styles.input, { flex: 1 }]}
-                    value={envelope.name}
-                    onChangeText={name => updateEnvelope(envelope.id, { name })}
-                    placeholder="예산 이름"
-                    placeholderTextColor={colors.subtle}
-                    selectTextOnFocus
-                    autoCorrect={false}
-                    spellCheck={false}
-                  />
-                  <TextInput
-                    style={[styles.input, styles.moneySmall]}
-                    value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
-                    keyboardType="numeric"
-                    onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
-                    placeholder="구간 예산"
-                    placeholderTextColor={colors.subtle}
-                  />
-                </View>
-              </ScaleDecorator>
-            )}
-          />
         </View>
 
         <View style={styles.section}>
@@ -3251,9 +3236,14 @@ export default function App() {
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
               <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
                 <View style={styles.modalTop}>
-                  <View>
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.eyebrow}>Income check</Text>
                     <Text style={styles.modalTitle}>입금 포함 지금 잔액</Text>
+                    <Text style={styles.helperText}>
+                      통장에 들어온 월급/수입을 포함한 현재 잔액이에요.{"\n"}
+                      저축이나 고정 지출을 빼기 전 금액으로 입력해주세요.{"\n"}
+                      여러 통장을 쓰면 생활비로 쓸 통장 합계만 적으면 됩니다.
+                    </Text>
                   </View>
                   <TouchableOpacity
                     onPress={closeIncomeConfirm}
@@ -3266,7 +3256,7 @@ export default function App() {
                 </View>
                 <MoneyInput label="지금 잔액" value={incomeConfirmBalance} onChange={setIncomeConfirmBalance} />
                 <TouchableOpacity style={styles.primaryButton} onPress={confirmIncomeBalance}>
-                  <Text style={styles.primaryButtonText}>입금 확정</Text>
+                  <Text style={styles.primaryButtonText}>이 금액으로 새 구간 시작</Text>
                 </TouchableOpacity>
               </ScrollView>
             </KeyboardAvoidingView>
@@ -3997,9 +3987,6 @@ const styles = StyleSheet.create({
   removeText: { color: colors.danger, fontWeight: '700', fontSize: 13 },
   editRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   envelopeEditRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  envelopeDragRow: { backgroundColor: colors.surface, borderRadius: 10, paddingVertical: 4 },
-  envelopeDragActive: { borderWidth: 1, borderColor: colors.teal, backgroundColor: colors.tealLight },
-  dragHandle: { width: 32, height: 44, alignItems: 'center', justifyContent: 'center' },
   setupEnvelopeRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   setupEnvelopeNameField: { flex: 1, gap: 4 },
   setupEnvelopeMoneyField: { width: 120, gap: 4 },
@@ -4013,12 +4000,13 @@ const styles = StyleSheet.create({
   },
   incomeTimingRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   incomeCadenceChips: { flex: 1, flexDirection: 'row', gap: 4 },
+  cadenceChipText: { fontSize: 11 },
   incomeCadenceChip: {
     flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 8,
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
     paddingVertical: 8,
     alignItems: 'center',
     justifyContent: 'center',
