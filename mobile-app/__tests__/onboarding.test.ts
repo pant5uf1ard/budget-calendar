@@ -124,7 +124,7 @@ describe('direct onboarding envelope calculation', () => {
     expect(budgets.쇼핑).toBe(100000);
     expect(budgets.생활).toBe(70000);
     expect(budgets.교통).toBe(30000);
-    expect(budgets.기타).toBe(-65000);
+    expect(budgets.기타).toBe(0); // clamped at 0 when leftover would be negative
   });
 
   it('maps provided lunch and home dinner to 80000 food budget', () => {
@@ -149,11 +149,14 @@ describe('direct onboarding envelope calculation', () => {
   });
 
   it('uses housing for living budget and moneyStyle for other adjustment', () => {
-    const family = monthlyEnvelopeBudgets(makeState({ housing: 'family' }), initialCoachProfile);
-    const loose = monthlyEnvelopeBudgets(makeState(), { ...initialCoachProfile, moneyStyle: 'loose' });
+    // Use enough income so 기타 is positive and the otherAdjust effect shows.
+    const state = makeState({ currentBalance: 0, incomes: [{ id: 'i', name: '월', cadence: 'monthly', anchorDate: '2026-06-25', amount: 3000000 }] as never });
+    const family = monthlyEnvelopeBudgets({ ...state, housing: 'family' }, initialCoachProfile);
+    const looseBudgets = monthlyEnvelopeBudgets(state, { ...initialCoachProfile, moneyStyle: 'loose' });
+    const baseBudgets = monthlyEnvelopeBudgets(state, initialCoachProfile);
 
     expect(family.생활).toBe(30000);
-    expect(loose.기타).toBeGreaterThan(monthlyEnvelopeBudgets(makeState(), initialCoachProfile).기타);
+    expect(looseBudgets.기타).toBeGreaterThan(baseBudgets.기타);
   });
 
   it('calculates monthly living budget with cadence and automatic deductions (saving off)', () => {

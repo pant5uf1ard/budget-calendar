@@ -903,21 +903,21 @@ export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachP
   const fixedSum = fixedBudgets.식비 + fixedBudgets.생활 + fixedBudgets.교통 + fixedBudgets.쇼핑 + fixedBudgets.문화
   return {
     ...fixedBudgets,
-    기타: monthlyLivingBudget(state) - fixedSum + otherAdjust,
+    기타: Math.max(0, monthlyLivingBudget(state) - fixedSum + otherAdjust),
   }
 }
 
-export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
+export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
   const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
-  const monthlyTotal = Object.values(monthlyBudgets).reduce((sum, value) => sum + value, 0)
-  const today = new Date()
+  const monthlyTotal = Object.values(monthlyBudgets).reduce((sum, value) => sum + Math.max(0, value), 0)
   const { end } = periodBounds(state, today)
   const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
   const savingForPeriod = derivedSavingForPeriod(state, profile, today)
   const livingPool = Math.max(state.currentBalance - fixedForPeriod - savingForPeriod, 0)
   return state.envelopes.map(envelope => {
+    const categoryShare = Math.max(0, monthlyBudgets[envelope.name] ?? 0)
     const share = monthlyTotal > 0
-      ? (monthlyBudgets[envelope.name] / monthlyTotal) * livingPool
+      ? (categoryShare / monthlyTotal) * livingPool
       : livingPool / Math.max(state.envelopes.length, 1)
     return { ...envelope, periodLimit: roundToThousand(share) }
   })
@@ -1139,7 +1139,8 @@ export function calculatePlan(state: BudgetState, today: Date) {
   const todayWeight = weightForDate(today, state.lifestyleType)
   const todayAllowance = dailyUnit * todayWeight
   const futureWeightedDays = Math.max(0, remainingWeightedDays - todayWeight)
-  const futureBasePool = Math.max(0, state.currentBalance - fixedRemaining - savingReserved)
+  const todayActualOrPlanned = Math.max(todaySpent, todayAllowance)
+  const futureBasePool = Math.max(0, state.currentBalance + todaySpent - fixedRemaining - savingReserved - todayActualOrPlanned)
   const futureDailyUnit = futureWeightedDays > 0 ? futureBasePool / futureWeightedDays : 0
 
   return {
@@ -1220,7 +1221,7 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
   const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, today)
   const newSavingGoal = state.savingEnabled ? savingBreakdown.perCycle : 0
   const stateAfterSaving = { ...nextStateForRecalc, savingGoal: newSavingGoal }
-  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile)
+  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile, today)
   return {
     ...state,
     currentBalance: newBalance,
@@ -1570,7 +1571,9 @@ export default function App() {
         if (value) {
           try {
             const saved = JSON.parse(value)
-            setState(sanitizeBudgetState(saved))
+            const sanitized = sanitizeBudgetState(saved)
+            setState(sanitized)
+            setCoachProfile(sanitized.coachProfile)
           } catch {
             AsyncStorage.removeItem(STORAGE_KEY)
           }
