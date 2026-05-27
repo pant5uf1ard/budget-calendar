@@ -156,17 +156,18 @@ describe('direct onboarding envelope calculation', () => {
     expect(loose.기타).toBeGreaterThan(monthlyEnvelopeBudgets(makeState(), initialCoachProfile).기타);
   });
 
-  it('calculates monthly living budget with cadence and automatic deductions', () => {
+  it('calculates monthly living budget with cadence and automatic deductions (saving off)', () => {
     const state = makeState({
       incomes: [{ id: 'income-1', name: '격주', cadence: 'biweekly', anchorDate: '2026-05-23', amount: 500000 }] as never,
       fixedItems: [{ id: 'fixed-1', name: '고정', day: 1, amount: 234000 }],
-      savingEnabled: true,
-      savingGoal: 350000,
+      savingEnabled: false,
+      savingGoal: 0,
       datePoolMonthly: 200000,
       eventReserveMonthly: 40000,
     });
 
-    expect(Math.round(monthlyLivingBudget(state))).toBe(259333);
+    // income 500k biweekly → monthly ≈ 1,083,333. minus fixed 234k, datePool 200k, event 40k = 609,333
+    expect(Math.round(monthlyLivingBudget(state))).toBe(609333);
   });
 
   it('splits the current balance across envelopes by category share', () => {

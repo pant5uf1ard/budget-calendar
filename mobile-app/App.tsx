@@ -754,6 +754,10 @@ function monthlyIncomeAmount(item: IncomeItem) {
   const amount = incomePlanningAmount(item)
   if (item.cadence === 'biweekly') return amount * 26 / 12
   if (item.cadence === 'weekly') return amount * 52 / 12
+  if (item.cadence === 'irregular') {
+    const interval = Math.max(1, item.estIntervalDays ?? 30)
+    return amount * (30 / interval)
+  }
   return amount
 }
 
@@ -812,13 +816,18 @@ function sumForDate(state: BudgetState, dateKey: string) {
   return recordsForDate(state, dateKey).reduce((sum, item) => sum + item.amount, 0)
 }
 
+function derivedMonthlySaving(state: BudgetState) {
+  if (!state.savingEnabled) return 0
+  return suggestSavingBreakdown(state, state.coachProfile).monthly
+}
+
 export function monthlyLivingBudget(state: BudgetState) {
   const incomeTotal = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
   const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
   return Math.max(
     incomeTotal
     - fixedTotal
-    - (state.savingEnabled ? state.savingGoal : 0)
+    - derivedMonthlySaving(state)
     - state.datePoolMonthly
     - state.eventReserveMonthly,
     0,
@@ -827,7 +836,7 @@ export function monthlyLivingBudget(state: BudgetState) {
 
 function monthPlannedLivingBudget(state: BudgetState) {
   const monthlyBudget = monthlyLivingBudget(state)
-  return monthlyBudget > 0 ? monthlyBudget : Math.max(state.currentBalance - state.savingGoal, 0)
+  return monthlyBudget > 0 ? monthlyBudget : Math.max(state.currentBalance - derivedMonthlySaving(state), 0)
 }
 
 function roundToThousand(value: number) {
@@ -872,6 +881,11 @@ export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProf
   return state.periods.length === 0 ? breakdown.firstPeriod : breakdown.perCycle
 }
 
+export function derivedSavingForPeriod(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
+  if (!state.savingEnabled) return 0
+  return suggestSavingAmount(state, profile, today)
+}
+
 export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
   const lunchCost = { provided: 0, lunchbox: 20000, buy: 100000, delivery: 140000 }[profile.lunch]
   const dinnerCost = { home: 80000, mixed: 130000, buy: 180000 }[profile.dinner]
@@ -896,10 +910,9 @@ export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachP
   const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
   const monthlyTotal = Object.values(monthlyBudgets).reduce((sum, value) => sum + value, 0)
   const today = new Date()
-  const { start, end } = periodBounds(state, today)
-  const periodDays = Math.max(1, daysBetween(start, end))
+  const { end } = periodBounds(state, today)
   const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
-  const savingForPeriod = state.savingEnabled ? state.savingGoal * (periodDays / 30) : 0
+  const savingForPeriod = derivedSavingForPeriod(state, profile, today)
   const livingPool = Math.max(state.currentBalance - fixedForPeriod - savingForPeriod, 0)
   return state.envelopes.map(envelope => {
     const share = monthlyTotal > 0
@@ -1095,11 +1108,7 @@ export function calculatePlan(state: BudgetState, today: Date) {
   const { start, end, overdue } = periodBounds(state, today)
   const endForCalc = end
   const todaySpent = sumForDate(state, isoDate(today))
-  let savingReserved = 0
-  if (state.savingEnabled) {
-    const breakdown = suggestSavingBreakdown(state, state.coachProfile, today)
-    savingReserved = state.periods.length === 0 ? breakdown.firstPeriod : breakdown.perCycle
-  }
+  const savingReserved = derivedSavingForPeriod(state, state.coachProfile, today)
   const fixedRemaining = recurringAmountBetween(state.fixedItems, today, endForCalc, false)
 
   if (overdue) {
@@ -1126,7 +1135,7 @@ export function calculatePlan(state: BudgetState, today: Date) {
     remainingWeightedDays += weightForDate(cursor, state.lifestyleType)
   }
 
-  const basePool = state.currentBalance + todaySpent - fixedRemaining - savingReserved
+  const basePool = Math.max(0, state.currentBalance + todaySpent - fixedRemaining - savingReserved)
   const dailyUnit = remainingWeightedDays > 0 ? basePool / remainingWeightedDays : 0
   const todayWeight = weightForDate(today, state.lifestyleType)
   const todayAllowance = dailyUnit * todayWeight
