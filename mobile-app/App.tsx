@@ -141,7 +141,6 @@ type BudgetState = {
   datePoolMonthly: number
   eventReserveMonthly: number
   housing: HousingType
-  dailyNotes: Record<string, string>
   noSpendDates: string[]
 }
 
@@ -240,7 +239,6 @@ const initialState: BudgetState = {
   datePoolMonthly: 0,
   eventReserveMonthly: 40000,
   housing: 'solo',
-  dailyNotes: {},
   noSpendDates: [],
 }
 
@@ -528,15 +526,6 @@ function normalizeEnvelopes(value: unknown): BudgetEnvelope[] {
   }))
 }
 
-function sanitizeDailyNotes(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([dateKey, note]) => isIsoDateKey(dateKey) && typeof note === 'string')
-      .map(([dateKey, note]) => [dateKey, note]),
-  ) as Record<string, string>
-}
-
 function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return initialCoachProfile
   const saved = value as Record<string, unknown>
@@ -717,7 +706,6 @@ export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
     datePoolMonthly: sanitizeAmount(saved.datePoolMonthly),
     eventReserveMonthly: saved.eventReserveMonthly === undefined ? 40000 : sanitizeAmount(saved.eventReserveMonthly),
     housing: isHousingType(saved.housing) ? saved.housing : 'solo',
-    dailyNotes: sanitizeDailyNotes(saved.dailyNotes),
     noSpendDates: Array.isArray(saved.noSpendDates) ? saved.noSpendDates.filter(isIsoDateKey) : [],
   }
 }
@@ -1866,16 +1854,6 @@ export default function App() {
     patch({ savingGoal: saving, envelopes: suggestEnvelopeBudgets({ ...state, savingGoal: saving }, coachProfile) })
   }
 
-  function updateDailyNote(dateKey: string, note: string) {
-    setState(prev => ({
-      ...prev,
-      dailyNotes: {
-        ...prev.dailyNotes,
-        [dateKey]: note,
-      },
-    }))
-  }
-
   function renderSetup() {
     const savingStep = 11
     const resultStep = 12
@@ -2632,21 +2610,6 @@ export default function App() {
           ))}
         </Animated.View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>오늘 메모</Text>
-          <FocusInput
-            style={[styles.input, styles.noteInput]}
-            value={state.dailyNotes[todayKey] ?? ''}
-            onChangeText={note => updateDailyNote(todayKey, note)}
-            placeholder="예: 저녁 약속 있음"
-            placeholderTextColor={colors.subtle}
-            accessibilityLabel="오늘 메모"
-            autoCorrect={false}
-            spellCheck={false}
-            multiline
-          />
-        </View>
-
       </ScrollView>
     )
   }
@@ -3022,6 +2985,20 @@ export default function App() {
             accessibilityLabel="데이터 가져오기"
           >
             <Text style={styles.secondaryButtonText}>백업 불러오기</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => confirmDestructive('온보딩 다시', '모든 데이터가 지워지고 코치 질문부터 다시 시작됩니다.', () => {
+              AsyncStorage.removeItem(STORAGE_KEY).catch(() => {})
+              setState(initialState)
+              setCoachProfile(initialCoachProfile)
+              setSetupStep(0)
+              setTab('home')
+            })}
+            accessibilityRole="button"
+            accessibilityLabel="온보딩 다시 시작"
+          >
+            <Text style={[styles.secondaryButtonText, { color: colors.danger }]}>온보딩 다시 시작</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -3755,11 +3732,6 @@ const styles = StyleSheet.create({
   deleteText: { fontSize: 12, color: colors.danger, fontWeight: '700' },
   overText: { color: colors.danger },
   underText: { color: colors.success },
-  noteInput: {
-    minHeight: 86,
-    textAlignVertical: 'top',
-    lineHeight: 20,
-  },
   emptyState: {
     alignItems: 'center',
     paddingVertical: 24,
