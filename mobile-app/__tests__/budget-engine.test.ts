@@ -392,21 +392,35 @@ describe('period budget engine', () => {
     expect(iso(openEnded.end)).toBe('2026-06-20');
   });
 
-  it('calculates daily unit from live wallet, fixed costs, and savings overlay', () => {
+  it('calculates daily unit from live wallet and fixed costs when saving is off', () => {
+    const state = makeState({
+      currentBalance: 800000,
+      currentPeriodStart: '2026-05-20',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-05-25', amount: 1000000 } as never],
+      fixedItems: [{ id: 'fixed-1', name: '통신비', day: 23, amount: 50000 }],
+      savingEnabled: false,
+      savingGoal: 0,
+    });
+    const plan = calculatePlan(state, parseIso('2026-05-20'));
+
+    expect(plan.dailyUnit).toBe(150000);
+    expect(plan.todayAllowance).toBe(150000);
+    expect(plan.fixedRemaining).toBe(50000);
+    expect(plan.savingReserved).toBe(0);
+  });
+
+  it('derives savingReserved from the live breakdown when saving is on', () => {
     const state = makeState({
       currentBalance: 800000,
       currentPeriodStart: '2026-05-20',
       incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-05-25', amount: 1000000 } as never],
       fixedItems: [{ id: 'fixed-1', name: '통신비', day: 23, amount: 50000 }],
       savingEnabled: true,
-      savingGoal: 100000,
     });
     const plan = calculatePlan(state, parseIso('2026-05-20'));
 
-    expect(plan.dailyUnit).toBe(130000);
-    expect(plan.todayAllowance).toBe(130000);
-    expect(plan.fixedRemaining).toBe(50000);
-    expect(plan.savingReserved).toBe(100000);
+    expect(plan.savingReserved).toBeGreaterThan(0);
+    expect(plan.dailyUnit).toBeLessThan(150000);
   });
 
   it('adds today spending back to the pool then subtracts it from today remaining', () => {

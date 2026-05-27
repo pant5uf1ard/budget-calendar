@@ -834,14 +834,20 @@ function roundToThousand(value: number) {
   return Math.round(value / 1000) * 1000
 }
 
-function roundToTenThousand(value: number) {
-  return Math.round(value / 10000) * 10000
+function floorToThousand(value: number) {
+  return Math.floor(value / 1000) * 1000
+}
+
+export function coachSpendingMonthly(state: BudgetState, profile: BudgetCoachProfile): number {
+  const lunchCost = { provided: 0, lunchbox: 20000, buy: 100000, delivery: 140000 }[profile.lunch]
+  const dinnerCost = { home: 80000, mixed: 130000, buy: 180000 }[profile.dinner]
+  const socialBudget = Math.min(30, Math.max(0, profile.socialFrequency)) * profile.socialPerVisit
+  const livingItemsBudget = { solo: 70000, family: 30000, share: 50000 }[state.housing]
+  return lunchCost + dinnerCost + livingItemsBudget + 30000 + profile.shoppingMonthly + socialBudget + profile.contentMonthly
 }
 
 export function suggestSavingBreakdown(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
-  const monthlyBudgets = monthlyEnvelopeBudgets(state, profile)
-  const monthlyLivingPool = CATEGORIES.reduce((sum, category) => sum + Math.max(0, monthlyBudgets[category] ?? 0), 0)
-  const dailyLiving = monthlyLivingPool / 30
+  const monthlySpending = coachSpendingMonthly(state, profile)
   const monthlyIncome = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
   const monthlyFixed = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
   const monthlyReserves = (state.datePoolMonthly || 0) + (state.eventReserveMonthly || 0)
@@ -849,13 +855,16 @@ export function suggestSavingBreakdown(state: BudgetState, profile: BudgetCoachP
   const { end } = periodBounds(state, today)
   const periodDays = Math.max(1, daysBetween(today, end))
   const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, end, false)
-  const expectedSpend = dailyLiving * periodDays + fixedForPeriod
 
-  const firstPeriod = Math.max(0, roundToTenThousand(state.currentBalance - expectedSpend))
-  const monthly = Math.max(0, roundToTenThousand(monthlyIncome - monthlyFixed - monthlyLivingPool - monthlyReserves))
-  const perCycle = Math.max(0, roundToTenThousand(monthly * (periodDays / 30)))
+  const dailySpending = monthlySpending / 30
+  const expectedSpend = dailySpending * periodDays + fixedForPeriod
 
-  return { firstPeriod, perCycle, monthly, monthlyLivingPool, periodDays }
+  const monthlyRaw = Math.max(0, monthlyIncome - monthlyFixed - monthlySpending - monthlyReserves)
+  const firstPeriod = floorToThousand(Math.max(0, state.currentBalance - expectedSpend))
+  const perCycle = floorToThousand(Math.max(0, monthlyRaw * (periodDays / 30)))
+  const monthly = floorToThousand(monthlyRaw)
+
+  return { firstPeriod, perCycle, monthly, monthlySpending, periodDays }
 }
 
 export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
@@ -1086,7 +1095,11 @@ export function calculatePlan(state: BudgetState, today: Date) {
   const { start, end, overdue } = periodBounds(state, today)
   const endForCalc = end
   const todaySpent = sumForDate(state, isoDate(today))
-  const savingReserved = state.savingEnabled && state.savingGoal > 0 ? state.savingGoal : 0
+  let savingReserved = 0
+  if (state.savingEnabled) {
+    const breakdown = suggestSavingBreakdown(state, state.coachProfile, today)
+    savingReserved = state.periods.length === 0 ? breakdown.firstPeriod : breakdown.perCycle
+  }
   const fixedRemaining = recurringAmountBetween(state.fixedItems, today, endForCalc, false)
 
   if (overdue) {
@@ -2395,13 +2408,17 @@ export default function App() {
             <BreakdownRow label="현재 잔액" value={money(state.currentBalance)} />
             <BreakdownRow label="다음 보충 시점" value={deriveModeLabel(state)} />
             <BreakdownRow label="이번 입금까지 고정지출" value={money(fixedTotal)} />
-            <BreakdownRow
-              label="저축"
-              value={state.savingEnabled
-                ? `이번 ${money(savingBreakdown.firstPeriod)} · 다음부터 매 ${money(savingBreakdown.perCycle)} (월 ${money(savingBreakdown.monthly)})`
-                : 'OFF'}
-            />
-            <BreakdownRow label="자동 차감" value={`데통 ${money(state.datePoolMonthly)} / 이벤트 ${money(state.eventReserveMonthly)}`} />
+            {state.savingEnabled ? (
+              <>
+                <BreakdownRow label="저축 (이번 입금까지)" value={money(savingBreakdown.firstPeriod)} tone="plus" />
+                <BreakdownRow label="저축 (다음부터 매 입금)" value={money(savingBreakdown.perCycle)} tone="plus" />
+                <BreakdownRow label="저축 (월 환산)" value={money(savingBreakdown.monthly)} />
+              </>
+            ) : (
+              <BreakdownRow label="저축" value="OFF" />
+            )}
+            <BreakdownRow label="데이트 통장" value={money(state.datePoolMonthly)} />
+            <BreakdownRow label="이벤트 적립" value={money(state.eventReserveMonthly)} />
             <View style={styles.breakdownDivider} />
             <BreakdownRow label="6개 예산 합" value={money(envelopeTotal)} tone="plus" />
           </View>
