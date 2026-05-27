@@ -1340,11 +1340,13 @@ function LifestylePicker({ value, onChange }: { value: LifestyleType; onChange: 
 }
 
 function ExpenseRow({ item, onEdit, onDelete }: { item: ExpenseRecord; onEdit?: () => void; onDelete: () => void }) {
+  const hasMemo = item.memo.trim().length > 0
+  const time = new Date(item.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
   return (
     <View style={styles.expenseRow}>
       <View style={{ flex: 1 }}>
-        <Text style={styles.expenseMemo}>{item.memo || item.category}</Text>
-        <Text style={styles.expenseSub}>{item.category} · {new Date(item.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</Text>
+        <Text style={styles.expenseMemo}>{hasMemo ? item.memo : item.category}</Text>
+        <Text style={styles.expenseSub}>{hasMemo ? `${item.category} · ${time}` : time}</Text>
       </View>
       <Text style={styles.expenseAmount}>{money(item.amount)}</Text>
       {onEdit && (
@@ -2691,14 +2693,14 @@ export default function App() {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={styles.weekRow}>
-          {WEEKDAYS.map(day => <Text key={day} style={styles.weekLabel}>{day}</Text>)}
-        </View>
         <View style={styles.legendRow}>
           <View style={styles.legendItem}><View style={[styles.legendDot, styles.legendUnder]} /><Text style={styles.legendText}>적게 씀</Text></View>
           <View style={styles.legendItem}><View style={[styles.legendDot, styles.legendOver]} /><Text style={styles.legendText}>초과</Text></View>
           <View style={styles.legendItem}><View style={styles.legendToday} /><Text style={styles.legendText}>오늘</Text></View>
           <View style={styles.legendItem}><View style={styles.legendFixed} /><Text style={styles.legendText}>고정</Text></View>
+        </View>
+        <View style={styles.weekRow}>
+          {WEEKDAYS.map(day => <Text key={day} style={styles.weekLabel}>{day}</Text>)}
         </View>
         <View style={styles.calendarGrid}>
           {slots.map((day, index) => {
