@@ -1,6 +1,42 @@
-# Codex Challenge 결과 — 미수정 TODO
+# Codex Challenge — 잔여 알려진 한계
 
-Codex 3차 챌린지에서 발견된 잔여 이슈. 우선순위순.
+Codex 1-4차 챌린지 결과 중 별도 설계 결정이 필요해 보류한 항목.
+
+## 2026-05-28 4차 라운드 잔여 (별도 설계 결정 필요)
+
+### #2 Payday 확정 직후 같은날 추가 expense 가 lost
+**상황**: 사용자가 payday 오전에 입금 확정 (closePeriod 발동). 이후 같은날 점심값 기록.
+- snapshot 은 이미 [oldStart, payday] 로 frozen
+- 새 period 는 payday+1 부터
+- payday 날짜 expense 는 어느 active period 에도 안 잡힘 (snapshot 도 frozen)
+
+**근본 원인**: 날짜 string 기반 boundary, 시간 정보 무시. 같은 날 안에서 "확정 전" / "확정 후" 구분 불가.
+
+**제안 fix 방향** (둘 중 택):
+- A) closePeriod 시점에 그 후 발생할 payday 지출도 active period 에 잡히도록 currentPeriodStart = payday 로 두고, snapshot 은 confirmedAt 시각까지만 (createdAt 필터)
+- B) 사용자에게 "월급 받기 전" vs "받은 후" 선택지 제공
+- C) 받아들임 — 사용자가 payday 오전 지출은 확정 전 미리, 오후 지출은 확정 후 기록
+
+C 가 단순. UX 안내 추가하면 됨.
+
+### #3 Plan vs Actuals 의 payday 처리 비대칭
+**상황**: 
+- `calculateEnvelopeStatus`: `date <= today` (payday 포함)
+- `calculatePlan` / `recurringAmountBetween`: end 제외 (payday 제외)
+
+→ payday 지출은 actuals 에 잡히지만 plan 에는 안 잡혀서 "over budget" 으로 표시.
+
+**제안 fix 방향**:
+- A) calculatePlan 루프를 `<=` 로 변경하여 payday 포함
+- B) calculateEnvelopeStatus 를 `<` 로 변경하여 payday 제외 (snapshot 시점에만 < today)
+
+A 가 사용자 친화 (payday 도 예산 분배 일 1일치 받음). 다만 daily allowance 계산 미세 영향.
+
+→ #2 와 같이 묶어서 설계 결정 후 처리
+
+---
+
+## 이전 미수정 항목 (참고용)
 
 ## HIGH (데이터 정합성)
 

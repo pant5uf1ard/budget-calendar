@@ -8,7 +8,7 @@ import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import Reanimated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated'
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useFonts } from 'expo-font'
 import {
   Home as IconHome,
@@ -1518,7 +1518,17 @@ export default function App() {
   const [transferAmount, setTransferAmount] = useState(0)
   const quickMemoRef = useRef<TextInput>(null)
   const modalMemoRef = useRef<TextInput>(null)
-  const today = useMemo(() => new Date(), [])
+  const [today, setToday] = useState(() => new Date())
+  useEffect(() => {
+    const refreshIfDateChanged = () => {
+      const now = new Date()
+      if (isoDate(now) !== isoDate(today)) setToday(now)
+    }
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') refreshIfDateChanged()
+    })
+    return () => sub.remove()
+  }, [today])
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
   const todayKey = isoDate(today)
   const plan = calculatePlan(state, today)
@@ -1893,8 +1903,18 @@ export default function App() {
       Alert.alert('금액 입력', '옮길 금액을 입력해주세요.')
       return
     }
-    setState(prev => transferEnvelope(prev, transferFrom, transferTo, transferAmount))
-    Alert.alert('예산 이동 완료', `${transferFrom} → ${transferTo} ${money(transferAmount)} 옮겼어요. 총 예산은 그대로입니다.`)
+    const source = state.envelopes.find(envelope => envelope.name === transferFrom)
+    const sourceLimit = source?.periodLimit ?? 0
+    const actualAmount = Math.max(0, Math.min(transferAmount, sourceLimit))
+    if (actualAmount <= 0) {
+      Alert.alert('이동 불가', `${transferFrom} 예산이 부족해 옮길 수 없어요.`)
+      return
+    }
+    setState(prev => transferEnvelope(prev, transferFrom, transferTo, actualAmount))
+    const note = actualAmount < transferAmount
+      ? `요청한 ${money(transferAmount)} 중 ${transferFrom} 잔여만큼인 ${money(actualAmount)} 만 옮겼어요.`
+      : `${transferFrom} → ${transferTo} ${money(actualAmount)} 옮겼어요. 총 예산은 그대로입니다.`
+    Alert.alert('예산 이동 완료', note)
     closeTransferModal()
   }
 
@@ -1919,7 +1939,7 @@ export default function App() {
     const helperFreeBalance = Math.max(helperAccountBalance - helperCommitted, 0)
     const monthlyBudgets = monthlyEnvelopeBudgets(state, coachProfile)
     const monthlyBudgetTotal = CATEGORIES.reduce((sum, category) => sum + monthlyBudgets[category], 0)
-    const monthlyBudgetPool = monthlyLivingBudget(state)
+    const monthlyBudgetPool = monthlyLivingBudget(state, coachProfile)
     const canStartSetup = state.currentBalance > 0 && (state.incomes.length > 0 || incomeSetupMode === 'none')
 
     function advanceSetup() {
