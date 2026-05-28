@@ -2,37 +2,30 @@
 
 Codex 1-4차 챌린지 결과 중 별도 설계 결정이 필요해 보류한 항목.
 
-## 2026-05-28 4차 라운드 잔여 (별도 설계 결정 필요)
+## 2026-05-28 4차 라운드 — 모두 해결 ✓
 
-### #2 Payday 확정 직후 같은날 추가 expense 가 lost
-**상황**: 사용자가 payday 오전에 입금 확정 (closePeriod 발동). 이후 같은날 점심값 기록.
-- snapshot 은 이미 [oldStart, payday] 로 frozen
-- 새 period 는 payday+1 부터
-- payday 날짜 expense 는 어느 active period 에도 안 잡힘 (snapshot 도 frozen)
+#2 #3 = payday timing 두 이슈, "**payday = 새 cycle 첫날**" 모델로 해결:
+- closePeriod: snapshot endDate = payday - 1, 새 currentPeriodStart = payday
+- payday 의 지출 = 새 cycle 식비 (자동 귀속)
+- snapshot frozen 이어도 #2 발생 안 함 (payday 지출이 새 cycle 로 가니까)
+- plan/actuals 모두 같은 boundary 사용 → #3 해소
 
-**근본 원인**: 날짜 string 기반 boundary, 시간 정보 무시. 같은 날 안에서 "확정 전" / "확정 후" 구분 불가.
+---
 
-**제안 fix 방향** (둘 중 택):
-- A) closePeriod 시점에 그 후 발생할 payday 지출도 active period 에 잡히도록 currentPeriodStart = payday 로 두고, snapshot 은 confirmedAt 시각까지만 (createdAt 필터)
-- B) 사용자에게 "월급 받기 전" vs "받은 후" 선택지 제공
-- C) 받아들임 — 사용자가 payday 오전 지출은 확정 전 미리, 오후 지출은 확정 후 기록
+## 미해결 (별도 토픽)
 
-C 가 단순. UX 안내 추가하면 됨.
+### 신용카드 사용자 강제력
+**상황**: 신용카드 결제 시 통장 잔액 즉시 차감 X. 결제일에 한 번에 빠짐.
+- 앱은 expense 수동 입력 의존
+- 입력 안 하면 강제력 0
+- 입력해도 currentBalance 즉시 차감 → 실제 통장 잔액과 mismatch
 
-### #3 Plan vs Actuals 의 payday 처리 비대칭
-**상황**: 
-- `calculateEnvelopeStatus`: `date <= today` (payday 포함)
-- `calculatePlan` / `recurringAmountBetween`: end 제외 (payday 제외)
+**제안 방향** (별도 PR):
+- A) 입력 UX 강화 (quick chip, 자주 쓰는 카테고리, lock screen widget reminder)
+- D) 카드 결제 카테고리 별도 처리 — "카드값 누적 봉투" + 결제일 자동 시뮬레이션
+- C) 마이데이터 / 카드사 API 연동 (큰 작업)
 
-→ payday 지출은 actuals 에 잡히지만 plan 에는 안 잡혀서 "over budget" 으로 표시.
-
-**제안 fix 방향**:
-- A) calculatePlan 루프를 `<=` 로 변경하여 payday 포함
-- B) calculateEnvelopeStatus 를 `<` 로 변경하여 payday 제외 (snapshot 시점에만 < today)
-
-A 가 사용자 친화 (payday 도 예산 분배 일 1일치 받음). 다만 daily allowance 계산 미세 영향.
-
-→ #2 와 같이 묶어서 설계 결정 후 처리
+MVP 단계는 A 권장. Beta 피드백 후 D 검토.
 
 ---
 

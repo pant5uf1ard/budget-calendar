@@ -1207,18 +1207,19 @@ export function transferEnvelope(state: BudgetState, from: Category, to: Categor
 }
 
 export function closePeriod(state: BudgetState, today: Date, newBalance: number): BudgetState {
-  const endKey = isoDate(today)
-  if (state.currentPeriodStart === endKey || isBeforeDate(today, parseIso(state.currentPeriodStart))) {
+  const newStartKey = isoDate(today)
+  if (state.currentPeriodStart === newStartKey || isBeforeDate(today, parseIso(state.currentPeriodStart))) {
     return state
   }
-  const nextStart = addDays(today, 1)
-  const nextStartKey = isoDate(nextStart)
-  const actualByCategory = calculateEnvelopeStatus(state, today)
+  const previousEnd = addDays(today, -1)
+  const previousEndKey = isoDate(previousEnd)
+  const previousStateForSnapshot = { ...state, currentPeriodStart: state.currentPeriodStart }
+  const actualByCategory = calculateEnvelopeStatus(previousStateForSnapshot, previousEnd)
     .map(envelope => ({ category: envelope.name, amount: envelope.spent }))
   const snapshot: PeriodSnapshot = {
     id: makeId(),
     startDate: state.currentPeriodStart,
-    endDate: endKey,
+    endDate: previousEndKey,
     startingBalance: state.currentPeriodStartingBalance,
     confirmedIncome: newBalance - state.currentBalance,
     envelopePlan: state.currentPeriodPlan,
@@ -1226,15 +1227,15 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
     actualByCategory,
   }
   const periodsAfter = [...state.periods, snapshot]
-  const nextStateForRecalc = { ...state, currentBalance: newBalance, currentPeriodStart: nextStartKey, periods: periodsAfter }
-  const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, nextStart)
+  const nextStateForRecalc = { ...state, currentBalance: newBalance, currentPeriodStart: newStartKey, periods: periodsAfter }
+  const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, today)
   const newSavingGoal = state.savingEnabled ? savingBreakdown.perCycle : 0
   const stateAfterSaving = { ...nextStateForRecalc, savingGoal: newSavingGoal }
-  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile, nextStart)
+  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile, today)
   return {
     ...state,
     currentBalance: newBalance,
-    currentPeriodStart: nextStartKey,
+    currentPeriodStart: newStartKey,
     currentPeriodStartingBalance: newBalance,
     currentPeriodPlan: newEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
     currentTransfers: [],
