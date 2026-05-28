@@ -291,7 +291,8 @@ describe('period closing and envelope transfer', () => {
     const next = closePeriod(state, parseIso('2026-05-25'), 500000);
 
     expect(next.currentBalance).toBe(500000);
-    expect(next.currentPeriodStart).toBe('2026-05-25');
+    // payday lives in the closing snapshot; new period starts the day after
+    expect(next.currentPeriodStart).toBe('2026-05-26');
     expect(next.currentPeriodStartingBalance).toBe(500000);
     expect(next.currentTransfers).toEqual([]);
     expect(next.periods).toHaveLength(1);
@@ -310,7 +311,18 @@ describe('period closing and envelope transfer', () => {
 
     expect(next.currentBalance).toBe(123000);
     expect(next.periods[0].confirmedIncome).toBe(0);
-    expect(next.currentPeriodStart).toBe('2026-06-10');
+    expect(next.currentPeriodStart).toBe('2026-06-11');
+  });
+
+  it('is idempotent: re-closing on the same payday is a no-op', () => {
+    const state = makeState({
+      currentPeriodStart: '2026-05-01',
+      currentBalance: 100000,
+    });
+    const first = closePeriod(state, parseIso('2026-05-25'), 500000);
+    const second = closePeriod(first, parseIso('2026-05-25'), 500000);
+    expect(second.periods.length).toBe(first.periods.length);
+    expect(second.currentPeriodStart).toBe(first.currentPeriodStart);
   });
 });
 

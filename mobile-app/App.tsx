@@ -813,27 +813,27 @@ function sumForDate(state: BudgetState, dateKey: string) {
   return recordsForDate(state, dateKey).reduce((sum, item) => sum + item.amount, 0)
 }
 
-function derivedMonthlySaving(state: BudgetState) {
+function derivedMonthlySaving(state: BudgetState, profile: BudgetCoachProfile = state.coachProfile) {
   if (!state.savingEnabled) return 0
-  return suggestSavingBreakdown(state, state.coachProfile).monthly
+  return suggestSavingBreakdown(state, profile).monthly
 }
 
-export function monthlyLivingBudget(state: BudgetState) {
+export function monthlyLivingBudget(state: BudgetState, profile: BudgetCoachProfile = state.coachProfile) {
   const incomeTotal = state.incomes.reduce((sum, item) => sum + monthlyIncomeAmount(item), 0)
   const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
   return Math.max(
     incomeTotal
     - fixedTotal
-    - derivedMonthlySaving(state)
+    - derivedMonthlySaving(state, profile)
     - state.datePoolMonthly
     - state.eventReserveMonthly,
     0,
   )
 }
 
-function monthPlannedLivingBudget(state: BudgetState) {
-  const monthlyBudget = monthlyLivingBudget(state)
-  return monthlyBudget > 0 ? monthlyBudget : Math.max(state.currentBalance - derivedMonthlySaving(state), 0)
+function monthPlannedLivingBudget(state: BudgetState, profile: BudgetCoachProfile = state.coachProfile) {
+  const monthlyBudget = monthlyLivingBudget(state, profile)
+  return monthlyBudget > 0 ? monthlyBudget : Math.max(state.currentBalance - derivedMonthlySaving(state, profile), 0)
 }
 
 function roundToThousand(value: number) {
@@ -903,7 +903,7 @@ export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachP
   const fixedSum = fixedBudgets.식비 + fixedBudgets.생활 + fixedBudgets.교통 + fixedBudgets.쇼핑 + fixedBudgets.문화
   return {
     ...fixedBudgets,
-    기타: Math.max(0, monthlyLivingBudget(state) - fixedSum + otherAdjust),
+    기타: Math.max(0, monthlyLivingBudget(state, profile) - fixedSum + otherAdjust),
   }
 }
 
@@ -924,10 +924,10 @@ export function suggestEnvelopeBudgets(state: BudgetState, profile: BudgetCoachP
 }
 
 export function initializeSetupState(state: BudgetState, profile: BudgetCoachProfile, today: Date): BudgetState {
-  const savingGoal = state.savingEnabled ? state.savingGoal || suggestSavingAmount(state, profile) : 0
+  const savingGoal = state.savingEnabled ? state.savingGoal || suggestSavingAmount(state, profile, today) : 0
   const envelopes = state.envelopes.some(envelope => envelope.periodLimit > 0)
     ? state.envelopes
-    : suggestEnvelopeBudgets({ ...state, savingGoal }, profile)
+    : suggestEnvelopeBudgets({ ...state, savingGoal }, profile, today)
   return {
     ...state,
     savingGoal,
@@ -1191,19 +1191,28 @@ export function stateAfterUpdateExpense(state: BudgetState, id: string, updates:
 }
 
 export function transferEnvelope(state: BudgetState, from: Category, to: Category, amount: number): BudgetState {
+  const source = state.envelopes.find(envelope => envelope.name === from)
+  if (!source) return state
+  const clampedAmount = Math.max(0, Math.min(amount, source.periodLimit))
+  if (clampedAmount <= 0) return state
   return {
     ...state,
     envelopes: state.envelopes.map(envelope => {
-      if (envelope.name === from) return { ...envelope, periodLimit: envelope.periodLimit - amount }
-      if (envelope.name === to) return { ...envelope, periodLimit: envelope.periodLimit + amount }
+      if (envelope.name === from) return { ...envelope, periodLimit: envelope.periodLimit - clampedAmount }
+      if (envelope.name === to) return { ...envelope, periodLimit: envelope.periodLimit + clampedAmount }
       return envelope
     }),
-    currentTransfers: [...state.currentTransfers, { from, to, amount, at: new Date().toISOString() }],
+    currentTransfers: [...state.currentTransfers, { from, to, amount: clampedAmount, at: new Date().toISOString() }],
   }
 }
 
 export function closePeriod(state: BudgetState, today: Date, newBalance: number): BudgetState {
   const endKey = isoDate(today)
+  if (state.currentPeriodStart === endKey || isBeforeDate(today, parseIso(state.currentPeriodStart))) {
+    return state
+  }
+  const nextStart = addDays(today, 1)
+  const nextStartKey = isoDate(nextStart)
   const actualByCategory = calculateEnvelopeStatus(state, today)
     .map(envelope => ({ category: envelope.name, amount: envelope.spent }))
   const snapshot: PeriodSnapshot = {
@@ -1217,15 +1226,15 @@ export function closePeriod(state: BudgetState, today: Date, newBalance: number)
     actualByCategory,
   }
   const periodsAfter = [...state.periods, snapshot]
-  const nextStateForRecalc = { ...state, currentBalance: newBalance, currentPeriodStart: endKey, periods: periodsAfter }
-  const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, today)
+  const nextStateForRecalc = { ...state, currentBalance: newBalance, currentPeriodStart: nextStartKey, periods: periodsAfter }
+  const savingBreakdown = suggestSavingBreakdown(nextStateForRecalc, state.coachProfile, nextStart)
   const newSavingGoal = state.savingEnabled ? savingBreakdown.perCycle : 0
   const stateAfterSaving = { ...nextStateForRecalc, savingGoal: newSavingGoal }
-  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile, today)
+  const newEnvelopes = suggestEnvelopeBudgets(stateAfterSaving, state.coachProfile, nextStart)
   return {
     ...state,
     currentBalance: newBalance,
-    currentPeriodStart: endKey,
+    currentPeriodStart: nextStartKey,
     currentPeriodStartingBalance: newBalance,
     currentPeriodPlan: newEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
     currentTransfers: [],
@@ -1625,11 +1634,11 @@ export default function App() {
     if (resultSeededRef.current) return
     resultSeededRef.current = true
     setState(prev => {
-      const saving = prev.savingEnabled ? suggestSavingAmount(prev, coachProfile) : 0
+      const saving = prev.savingEnabled ? suggestSavingAmount(prev, coachProfile, today) : 0
       return {
         ...prev,
         savingGoal: saving,
-        envelopes: suggestEnvelopeBudgets({ ...prev, savingGoal: saving }, coachProfile),
+        envelopes: suggestEnvelopeBudgets({ ...prev, savingGoal: saving }, coachProfile, today),
       }
     })
   }, [atSetupResult, coachProfile])
@@ -1790,8 +1799,10 @@ export default function App() {
 
   function updateEnvelope(id: string, updates: Omit<Partial<BudgetEnvelope>, 'name'> & { name?: string }) {
     const { name, ...rest } = updates
+    const clampedLimit = typeof rest.periodLimit === 'number' ? Math.max(0, rest.periodLimit) : rest.periodLimit
     const normalizedUpdates: Partial<BudgetEnvelope> = {
       ...rest,
+      ...(typeof clampedLimit === 'number' ? { periodLimit: clampedLimit } : {}),
       ...(typeof name === 'string' ? { name: normalizeCategory(name) } : {}),
     }
     patch({ envelopes: state.envelopes.map(item => item.id === id ? { ...item, ...normalizedUpdates } : item) })
@@ -1800,15 +1811,16 @@ export default function App() {
   function updateSetupEnvelopeLimit(id: string, periodLimit: number) {
     const target = state.envelopes.find(envelope => envelope.id === id)
     if (!target) return
+    const safeLimit = Math.max(0, periodLimit)
     if (target.name === '기타') {
-      patch({ envelopes: state.envelopes.map(envelope => envelope.id === id ? { ...envelope, periodLimit } : envelope) })
+      patch({ envelopes: state.envelopes.map(envelope => envelope.id === id ? { ...envelope, periodLimit: safeLimit } : envelope) })
       return
     }
-    const delta = periodLimit - target.periodLimit
+    const delta = safeLimit - target.periodLimit
     patch({
       envelopes: state.envelopes.map(envelope => {
-        if (envelope.id === id) return { ...envelope, periodLimit }
-        if (envelope.name === '기타') return { ...envelope, periodLimit: envelope.periodLimit - delta }
+        if (envelope.id === id) return { ...envelope, periodLimit: safeLimit }
+        if (envelope.name === '기타') return { ...envelope, periodLimit: Math.max(0, envelope.periodLimit - delta) }
         return envelope
       }),
     })
@@ -1887,13 +1899,13 @@ export default function App() {
   }
 
   function applyEnvelopeSuggestion() {
-    const saving = state.savingEnabled ? suggestSavingAmount(state, coachProfile) : 0
-    const livingBudget = monthPlannedLivingBudget({ ...state, savingGoal: saving })
+    const saving = state.savingEnabled ? suggestSavingAmount(state, coachProfile, today) : 0
+    const livingBudget = monthPlannedLivingBudget({ ...state, savingGoal: saving }, coachProfile)
     if (!livingBudget) {
       Alert.alert('먼저 기준을 입력해주세요', '생활비 잔액이나 들어올 돈을 입력하면 예산을 제안할 수 있어요.')
       return
     }
-    patch({ savingGoal: saving, envelopes: suggestEnvelopeBudgets({ ...state, savingGoal: saving }, coachProfile) })
+    patch({ savingGoal: saving, envelopes: suggestEnvelopeBudgets({ ...state, savingGoal: saving }, coachProfile, today) })
   }
 
   function renderSetup() {
@@ -2880,12 +2892,19 @@ export default function App() {
                   <Text style={styles.suggestionTitle}>저축 자동 적용</Text>
                   <Switch
                     value={state.savingEnabled}
-                    onValueChange={enabled => patch({
-                      savingEnabled: enabled,
-                      savingGoal: enabled
+                    onValueChange={enabled => {
+                      const nextSavingGoal = enabled
                         ? (state.periods.length === 0 ? settingsBreakdown.firstPeriod : settingsBreakdown.perCycle)
-                        : 0,
-                    })}
+                        : 0
+                      const nextStateForEnvelopes = { ...state, savingEnabled: enabled, savingGoal: nextSavingGoal }
+                      const nextEnvelopes = suggestEnvelopeBudgets(nextStateForEnvelopes, coachProfile, today)
+                      patch({
+                        savingEnabled: enabled,
+                        savingGoal: nextSavingGoal,
+                        envelopes: nextEnvelopes,
+                        currentPeriodPlan: nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+                      })
+                    }}
                     trackColor={{ false: colors.borderMd, true: colors.teal }}
                     thumbColor={colors.surface}
                     ios_backgroundColor={colors.borderMd}
