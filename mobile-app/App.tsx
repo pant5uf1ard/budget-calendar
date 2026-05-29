@@ -8,7 +8,7 @@ import DateTimePicker from '@react-native-community/datetimepicker'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import Reanimated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated'
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useFonts } from 'expo-font'
 import {
   Home as IconHome,
@@ -27,6 +27,7 @@ import {
   Check as IconCheck,
   Pencil as IconEdit,
   Trash2 as IconTrash,
+  ArrowLeftRight as IconSwap,
 } from 'lucide-react-native'
 import {
   AccessibilityInfo,
@@ -38,6 +39,7 @@ import {
   KeyboardAvoidingView,
   LayoutAnimation,
   Modal,
+  PanResponder,
   Platform,
   ScrollView,
   StyleSheet,
@@ -58,8 +60,16 @@ type Category = '식비' | '생활' | '교통' | '쇼핑' | '문화' | '기타'
 type LifestyleType = 'balanced' | 'worker' | 'weekendSocial' | 'weekendHeavy' | 'weekdayOnly'
 type HousingType = 'solo' | 'family' | 'share'
 type BudgetCoachProfile = {
+  breakfast: 'none' | 'home' | 'buy'
   lunch: 'provided' | 'lunchbox' | 'buy' | 'delivery'
-  dinner: 'home' | 'mixed' | 'buy'
+  dinner: 'home' | 'mixed' | 'buy' | 'delivery'
+  snack: 'none' | 'light' | 'often' | 'daily'
+  lateNight: 'none' | 'weekly' | 'often'
+  breakfastMonthly: number
+  lunchMonthly: number
+  dinnerMonthly: number
+  snackMonthly: number
+  lateNightMonthly: number
   socialFrequency: number
   socialPerVisit: number
   shoppingMonthly: number
@@ -118,6 +128,17 @@ type PeriodSnapshot = {
   actualByCategory: { category: Category; amount: number }[]
 }
 
+type DayTone = 'none' | 'under' | 'over'
+
+type DailyBudgetSnapshot = {
+  date: string
+  allowance: number
+  spent: number
+  tone: DayTone
+  noSpend: boolean
+  capturedAt: string
+}
+
 type BudgetState = {
   setupComplete: boolean
   currentBalance: number
@@ -141,6 +162,7 @@ type BudgetState = {
   eventReserveMonthly: number
   housing: HousingType
   noSpendDates: string[]
+  dailySnapshots: Record<string, DailyBudgetSnapshot>
 }
 
 const STORAGE_KEY = 'budget-calendar-mobile-v1'
@@ -162,12 +184,13 @@ const TAB_ICONS: Record<Tab, typeof IconHome> = {
   settings: IconSettings,
 }
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
+const CALENDAR_PAGE_GAP = 14
 const LIFESTYLE_OPTIONS: { key: LifestyleType; title: string; description: string; weekdayWeight: number; weekendWeight: number }[] = [
-  { key: 'balanced', title: '균등형', description: '요일 상관없이 비슷하게 써요', weekdayWeight: 1, weekendWeight: 1 },
-  { key: 'worker', title: '직장인 기본형', description: '평일은 적게, 주말은 조금 더 써요', weekdayWeight: 0.8, weekendWeight: 1.6 },
-  { key: 'weekendSocial', title: '주말 약속형', description: '평일은 아끼고, 주말 약속이 잦아요', weekdayWeight: 0.65, weekendWeight: 2 },
-  { key: 'weekendHeavy', title: '주말 몰빵형', description: '평일은 거의 안 쓰고, 주말에 크게 써요', weekdayWeight: 0.45, weekendWeight: 2.8 },
-  { key: 'weekdayOnly', title: '주말 제외형', description: '주말 예산은 따로 잡지 않고 평일에만 나눠요', weekdayWeight: 1, weekendWeight: 0 },
+  { key: 'balanced', title: '주말 1.0배', description: '평일과 주말 소비가 거의 같아요', weekdayWeight: 1, weekendWeight: 1 },
+  { key: 'worker', title: '주말 1.3배', description: '주말에 조금 더 써요', weekdayWeight: 1, weekendWeight: 1.3 },
+  { key: 'weekendSocial', title: '주말 1.6배', description: '주말 약속이 꽤 있어요', weekdayWeight: 1, weekendWeight: 1.6 },
+  { key: 'weekendHeavy', title: '주말 2.0배', description: '주말에 몰아서 쓰는 편이에요', weekdayWeight: 1, weekendWeight: 2 },
+  { key: 'weekdayOnly', title: '주말 0배', description: '주말 예산은 따로 잡지 않아요', weekdayWeight: 1, weekendWeight: 0 },
 ]
 const CADENCE_OPTIONS: { key: Cadence; label: string }[] = [
   { key: 'monthly', label: '매달' },
@@ -176,16 +199,25 @@ const CADENCE_OPTIONS: { key: Cadence; label: string }[] = [
   { key: 'irregular', label: '들쭉날쭉' },
 ]
 export const initialCoachProfile: BudgetCoachProfile = {
-  lunch: 'buy',
-  dinner: 'mixed',
-  socialFrequency: 5,
-  socialPerVisit: 25000,
-  shoppingMonthly: 100000,
-  contentMonthly: 30000,
+  breakfast: 'none',
+  lunch: 'provided',
+  dinner: 'home',
+  snack: 'none',
+  lateNight: 'none',
+  breakfastMonthly: 0,
+  lunchMonthly: 0,
+  dinnerMonthly: 0,
+  snackMonthly: 0,
+  lateNightMonthly: 0,
+  socialFrequency: 0,
+  socialPerVisit: 0,
+  shoppingMonthly: 0,
+  contentMonthly: 0,
   moneyStyle: 'balanced',
 }
 
 type SetupStep =
+  | { kind: 'intro' }
   | { kind: 'balance' }
   | { kind: 'incomeMode' }
   | { kind: 'incomeDetail' }
@@ -201,6 +233,7 @@ type SetupStep =
   | { kind: 'result' }
 
 const SETUP_STEPS: SetupStep[] = [
+  { kind: 'intro' },
   { kind: 'balance' },
   { kind: 'incomeMode' },
   { kind: 'incomeDetail' },
@@ -235,9 +268,10 @@ const initialState: BudgetState = {
   periods: [],
   coachProfile: initialCoachProfile,
   datePoolMonthly: 0,
-  eventReserveMonthly: 40000,
+  eventReserveMonthly: 0,
   housing: 'solo',
   noSpendDates: [],
+  dailySnapshots: {},
 }
 
 const colors = {
@@ -363,6 +397,17 @@ function calendarMoney(value: number) {
   return Math.round(value).toLocaleString('ko-KR')
 }
 
+function withRo(word: string) {
+  const trimmed = word.trim()
+  const last = trimmed[trimmed.length - 1]
+  if (!last) return trimmed
+  const code = last.charCodeAt(0)
+  const hasJong = code >= 0xac00 && code <= 0xd7a3
+    ? (code - 0xac00) % 28 !== 0
+    : false
+  return `${trimmed}${hasJong ? '으로' : '로'}`
+}
+
 function shortFixedLabel(name: string) {
   return name.trim().slice(0, 3) || '고정'
 }
@@ -476,7 +521,7 @@ function sanitizeFixedItem(item: Partial<FixedItem>, index: number): FixedItem {
   return {
     id: sanitizeText(item.id, `fixed-${index + 1}`),
     name: sanitizeText(item.name, `고정 ${index + 1}`),
-    day: clampDay(Number(item.day) || 25),
+    day: sanitizeFinite(item.day) ? clampDay(Number(item.day)) : 0,
     amount: sanitizeAmount(item.amount),
   }
 }
@@ -542,6 +587,7 @@ function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
 
   if (!hasNewKeys) {
     return {
+      breakfast: saved.breakfast === 'home' || saved.breakfast === 'buy' || saved.breakfast === 'none' ? saved.breakfast : 'none',
       lunch: saved.lunch === 'provided'
         ? 'provided'
         : saved.lunch === 'home'
@@ -550,7 +596,7 @@ function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
             ? 'buy'
             : 'buy',
       dinner: saved.leak === 'delivery'
-        ? 'buy'
+        ? 'delivery'
         : saved.kitchen === 'small' || saved.kitchen === 'hard'
           ? 'buy'
           : saved.soloDinner === 'rare'
@@ -558,6 +604,13 @@ function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
             : saved.soloDinner === 'fourPlus'
               ? 'mixed'
               : 'mixed',
+      snack: saved.snack === 'light' || saved.snack === 'often' || saved.snack === 'daily' || saved.snack === 'none' ? saved.snack : 'none',
+      lateNight: saved.lateNight === 'weekly' || saved.lateNight === 'often' || saved.lateNight === 'none' ? saved.lateNight : 'none',
+      breakfastMonthly: 0,
+      lunchMonthly: 0,
+      dinnerMonthly: 0,
+      snackMonthly: 0,
+      lateNightMonthly: 0,
       socialFrequency: saved.socialCount === 'rare'
         ? 2
         : saved.socialCount === 'twoThree'
@@ -587,16 +640,30 @@ function sanitizeCoachProfile(value: unknown): BudgetCoachProfile {
   }
 
   return {
+    breakfast: saved.breakfast === 'none' || saved.breakfast === 'home' || saved.breakfast === 'buy'
+      ? saved.breakfast
+      : initialCoachProfile.breakfast,
     lunch: saved.lunch === 'provided' || saved.lunch === 'lunchbox' || saved.lunch === 'buy' || saved.lunch === 'delivery'
       ? saved.lunch
       : initialCoachProfile.lunch,
-    dinner: saved.dinner === 'home' || saved.dinner === 'mixed' || saved.dinner === 'buy'
+    dinner: saved.dinner === 'home' || saved.dinner === 'mixed' || saved.dinner === 'buy' || saved.dinner === 'delivery'
       ? saved.dinner
       : initialCoachProfile.dinner,
-    socialFrequency: Math.min(30, Math.max(0, sanitizeFinite(saved.socialFrequency))),
+    snack: saved.snack === 'none' || saved.snack === 'light' || saved.snack === 'often' || saved.snack === 'daily'
+      ? saved.snack
+      : initialCoachProfile.snack,
+    lateNight: saved.lateNight === 'none' || saved.lateNight === 'weekly' || saved.lateNight === 'often'
+      ? saved.lateNight
+      : initialCoachProfile.lateNight,
+    breakfastMonthly: sanitizeAmount(saved.breakfastMonthly),
+    lunchMonthly: sanitizeAmount(saved.lunchMonthly),
+    dinnerMonthly: sanitizeAmount(saved.dinnerMonthly),
+    snackMonthly: sanitizeAmount(saved.snackMonthly),
+    lateNightMonthly: sanitizeAmount(saved.lateNightMonthly),
+    socialFrequency: Math.max(0, sanitizeFinite(saved.socialFrequency)),
     socialPerVisit: sanitizeAmount(saved.socialPerVisit) || initialCoachProfile.socialPerVisit,
-    shoppingMonthly: sanitizeAmount(saved.shoppingMonthly) || initialCoachProfile.shoppingMonthly,
-    contentMonthly: sanitizeAmount(saved.contentMonthly) || initialCoachProfile.contentMonthly,
+    shoppingMonthly: sanitizeAmount(saved.shoppingMonthly),
+    contentMonthly: sanitizeAmount(saved.contentMonthly),
     moneyStyle: saved.moneyStyle === 'tight' || saved.moneyStyle === 'balanced' || saved.moneyStyle === 'loose'
       ? saved.moneyStyle
       : initialCoachProfile.moneyStyle,
@@ -660,6 +727,29 @@ function sanitizePeriods(value: unknown): PeriodSnapshot[] {
     .filter((item): item is PeriodSnapshot => Boolean(item))
 }
 
+
+function sanitizeDayTone(value: unknown): DayTone {
+  return value === 'under' || value === 'over' || value === 'none' ? value : 'none'
+}
+
+function sanitizeDailySnapshots(value: unknown): Record<string, DailyBudgetSnapshot> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const snapshots: Record<string, DailyBudgetSnapshot> = {}
+  Object.entries(value as Record<string, unknown>).forEach(([key, raw]) => {
+    if (!isIsoDateKey(key) || !raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const row = raw as Partial<DailyBudgetSnapshot>
+    snapshots[key] = {
+      date: key,
+      allowance: sanitizeFinite(row.allowance),
+      spent: sanitizeAmount(row.spent),
+      tone: sanitizeDayTone(row.tone),
+      noSpend: Boolean(row.noSpend),
+      capturedAt: typeof row.capturedAt === 'string' && row.capturedAt ? row.capturedAt : new Date().toISOString(),
+    }
+  })
+  return snapshots
+}
+
 export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
   const incomes = Array.isArray(saved.incomes)
     ? sortIncomes(saved.incomes.map(sanitizeIncomeItem).filter(item => isIsoDateKey(item.anchorDate)))
@@ -673,6 +763,7 @@ export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
   const envelopes = normalizeEnvelopes(saved.envelopes)
   const currentBalance = sanitizeAmount(saved.currentBalance)
   const currentPeriodPlan = sanitizeEnvelopePlan(saved.currentPeriodPlan, envelopes)
+  const dailySnapshots = sanitizeDailySnapshots(saved.dailySnapshots)
 
   return {
     ...initialState,
@@ -701,9 +792,10 @@ export function sanitizeBudgetState(saved: Partial<BudgetState>): BudgetState {
     periods: sanitizePeriods(saved.periods),
     coachProfile: sanitizeCoachProfile(saved.coachProfile),
     datePoolMonthly: sanitizeAmount(saved.datePoolMonthly),
-    eventReserveMonthly: saved.eventReserveMonthly === undefined ? 40000 : sanitizeAmount(saved.eventReserveMonthly),
+    eventReserveMonthly: sanitizeAmount(saved.eventReserveMonthly),
     housing: isHousingType(saved.housing) ? saved.housing : 'solo',
     noSpendDates: Array.isArray(saved.noSpendDates) ? saved.noSpendDates.filter(isIsoDateKey) : [],
+    dailySnapshots,
   }
 }
 
@@ -789,6 +881,14 @@ function isBeforeOrSameDate(a: Date, b: Date) {
   return isoDate(a) <= isoDate(b)
 }
 
+function earlierDate(a: Date, b: Date) {
+  return isBeforeDate(a, b) ? a : b
+}
+
+function isWithinDateRange(date: Date, start: Date, endExclusive: Date) {
+  return isAfterOrSameDate(date, start) && isBeforeDate(date, endExclusive)
+}
+
 function isWeekend(date: Date) {
   const day = date.getDay()
   return day === 0 || day === 6
@@ -846,11 +946,14 @@ function floorToThousand(value: number) {
 }
 
 export function coachSpendingMonthly(state: BudgetState, profile: BudgetCoachProfile): number {
-  const lunchCost = { provided: 0, lunchbox: 20000, buy: 100000, delivery: 140000 }[profile.lunch]
-  const dinnerCost = { home: 80000, mixed: 130000, buy: 180000 }[profile.dinner]
-  const socialBudget = Math.min(30, Math.max(0, profile.socialFrequency)) * profile.socialPerVisit
+  const breakfastCost = profile.breakfastMonthly || { none: 0, home: 30000, buy: 90000 }[profile.breakfast]
+  const lunchCost = profile.lunchMonthly || { provided: 0, lunchbox: 50000, buy: 180000, delivery: 260000 }[profile.lunch]
+  const dinnerCost = profile.dinnerMonthly || { home: 120000, mixed: 220000, buy: 330000, delivery: 450000 }[profile.dinner]
+  const snackCost = profile.snackMonthly || { none: 0, light: 40000, often: 90000, daily: 150000 }[profile.snack]
+  const lateNightCost = profile.lateNightMonthly || { none: 0, weekly: 60000, often: 160000 }[profile.lateNight]
+  const socialBudget = Math.max(0, profile.socialFrequency) * profile.socialPerVisit
   const livingItemsBudget = { solo: 70000, family: 30000, share: 50000 }[state.housing]
-  return lunchCost + dinnerCost + livingItemsBudget + 30000 + profile.shoppingMonthly + socialBudget + profile.contentMonthly
+  return breakfastCost + lunchCost + dinnerCost + snackCost + lateNightCost + livingItemsBudget + profile.shoppingMonthly + socialBudget + profile.contentMonthly
 }
 
 export function suggestSavingBreakdown(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
@@ -884,17 +987,20 @@ export function suggestSavingAmount(state: BudgetState, profile: BudgetCoachProf
 
 export function derivedSavingForPeriod(state: BudgetState, profile: BudgetCoachProfile, today: Date = new Date()) {
   if (!state.savingEnabled) return 0
-  return suggestSavingAmount(state, profile, today)
+  return sanitizeAmount(state.savingGoal)
 }
 
 export function monthlyEnvelopeBudgets(state: BudgetState, profile: BudgetCoachProfile) {
-  const lunchCost = { provided: 0, lunchbox: 20000, buy: 100000, delivery: 140000 }[profile.lunch]
-  const dinnerCost = { home: 80000, mixed: 130000, buy: 180000 }[profile.dinner]
-  const socialBudget = Math.min(30, Math.max(0, profile.socialFrequency)) * profile.socialPerVisit
+  const breakfastCost = profile.breakfastMonthly || { none: 0, home: 30000, buy: 90000 }[profile.breakfast]
+  const lunchCost = profile.lunchMonthly || { provided: 0, lunchbox: 50000, buy: 180000, delivery: 260000 }[profile.lunch]
+  const dinnerCost = profile.dinnerMonthly || { home: 120000, mixed: 220000, buy: 330000, delivery: 450000 }[profile.dinner]
+  const snackCost = profile.snackMonthly || { none: 0, light: 40000, often: 90000, daily: 150000 }[profile.snack]
+  const lateNightCost = profile.lateNightMonthly || { none: 0, weekly: 60000, often: 160000 }[profile.lateNight]
+  const socialBudget = Math.max(0, profile.socialFrequency) * profile.socialPerVisit
   const livingItemsBudget = { solo: 70000, family: 30000, share: 50000 }[state.housing]
   const otherAdjust = { tight: -10000, balanced: 0, loose: 20000 }[profile.moneyStyle]
   const fixedBudgets = {
-    식비: lunchCost + dinnerCost,
+    식비: breakfastCost + lunchCost + dinnerCost + snackCost + lateNightCost,
     생활: livingItemsBudget,
     교통: 30000,
     쇼핑: profile.shoppingMonthly,
@@ -1000,7 +1106,7 @@ function deriveMode(state: BudgetState) {
 
 function deriveModeLabel(state: BudgetState) {
   const mode = deriveMode(state)
-  if (mode === 'income') return '다음 입금일까지'
+  if (mode === 'income') return '다음 입금 전까지'
   if (mode === 'targetDate') return '목표일까지'
   return '페이스 관리 중'
 }
@@ -1049,6 +1155,11 @@ export function calculateEnvelopeStatus(state: BudgetState, date: Date) {
   })
 }
 
+export function calculateEnvelopeStatusThroughPeriod(state: BudgetState, date: Date) {
+  const { end } = periodBounds(state, date)
+  return calculateEnvelopeStatus(state, addDays(end, -1))
+}
+
 function recurringAmountBetween(
   items: { day: number; amount: number }[],
   startDate: Date,
@@ -1065,6 +1176,7 @@ function recurringAmountBetween(
   for (let monthOffset = 0; monthOffset <= monthSpan; monthOffset += 1) {
     const cursor = new Date(startDate.getFullYear(), startDate.getMonth() + monthOffset, 1)
     items.forEach(item => {
+      if (item.day <= 0 || item.amount <= 0) return
       const itemDate = dateWithMonthDay(cursor.getFullYear(), cursor.getMonth(), item.day)
       const afterStart = isAfterOrSameDate(itemDate, startDate)
       const beforeEnd = includeEndDate ? isBeforeOrSameDate(itemDate, endDate) : isBeforeDate(itemDate, endDate)
@@ -1087,20 +1199,105 @@ function allowanceForDate(date: Date, plan: ReturnType<typeof calculatePlan>, li
   const dateKey = isoDate(date)
   const todayKey = isoDate(today)
   if (dateKey > todayKey) {
-    return plan.futureDailyUnit * weightForDate(date, lifestyleType)
+    const unit = isWithinDateRange(date, today, plan.weekEndExclusive)
+      ? plan.futureDailyUnit
+      : plan.periodFutureDailyUnit
+    return unit * weightForDate(date, lifestyleType)
   }
   return plan.dailyUnit * weightForDate(date, lifestyleType)
 }
 
-function spendingTone(spent: number, allowance: number) {
+function spendingTone(spent: number, allowance: number): DayTone {
   if (spent <= 0) return 'none'
   return spent > allowance ? 'over' : 'under'
 }
 
-function dayTone(state: BudgetState, dateKey: string, spent: number, allowance: number) {
+function computedDayTone(state: BudgetState, dateKey: string, spent: number, allowance: number): DayTone {
   if (isNoSpendDate(state, dateKey)) return 'under'
   if (allowance <= 0) return 'none'
   return spendingTone(spent, allowance)
+}
+
+export function allowanceForCalendarDate(state: BudgetState, date: Date, plan: ReturnType<typeof calculatePlan>, today: Date) {
+  const dateKey = isoDate(date)
+  const snapshot = state.dailySnapshots[dateKey]
+  if (dateKey < isoDate(today) && snapshot) return snapshot.allowance
+  return allowanceForDate(date, plan, state.lifestyleType, today)
+}
+
+export function dayTone(state: BudgetState, dateKey: string, spent: number, allowance: number, today: Date = new Date()) {
+  const snapshot = state.dailySnapshots[dateKey]
+  if (dateKey < isoDate(today) && snapshot) return snapshot.tone
+  return computedDayTone(state, dateKey, spent, allowance)
+}
+
+export function ensurePastDailySnapshots(state: BudgetState, today: Date = new Date()) {
+  const todayKey = isoDate(today)
+  if (!state.setupComplete) return state
+
+  const plan = calculatePlan(state, today)
+  const candidateKeys = new Set<string>()
+  const start = parseIso(state.currentPeriodStart)
+  const maxDays = 180
+  for (let index = 0; index < maxDays; index += 1) {
+    const date = addDays(start, index)
+    const dateKey = isoDate(date)
+    if (dateKey >= todayKey) break
+    candidateKeys.add(dateKey)
+  }
+  state.expenses.forEach(expense => {
+    if (expense.date < todayKey) candidateKeys.add(expense.date)
+  })
+  state.noSpendDates.forEach(dateKey => {
+    if (dateKey < todayKey) candidateKeys.add(dateKey)
+  })
+
+  let changed = false
+  const nextSnapshots = { ...state.dailySnapshots }
+  candidateKeys.forEach(dateKey => {
+    const existing = nextSnapshots[dateKey]
+    const date = parseIso(dateKey)
+    const allowance = Math.round(existing ? existing.allowance : allowanceForDate(date, plan, state.lifestyleType, today))
+    const spent = sumForDate(state, dateKey)
+    const noSpend = isNoSpendDate(state, dateKey)
+    const tone = noSpend ? 'under' : allowance <= 0 ? 'none' : spendingTone(spent, allowance)
+    const next: DailyBudgetSnapshot = {
+      date: dateKey,
+      allowance,
+      spent,
+      tone,
+      noSpend,
+      capturedAt: existing?.capturedAt ?? new Date().toISOString(),
+    }
+    if (!existing
+      || existing.allowance !== next.allowance
+      || existing.spent !== next.spent
+      || existing.tone !== next.tone
+      || existing.noSpend !== next.noSpend) {
+      nextSnapshots[dateKey] = next
+      changed = true
+    }
+  })
+
+  return changed ? { ...state, dailySnapshots: nextSnapshots } : state
+}
+
+function startOfWeek(date: Date) {
+  return addDays(date, -date.getDay())
+}
+
+function weekRangeFor(date: Date) {
+  const start = startOfWeek(date)
+  const end = addDays(start, 6)
+  return { start, end }
+}
+
+function datesBetween(start: Date, end: Date) {
+  const dates: Date[] = []
+  for (let cursor = new Date(start); isBeforeOrSameDate(cursor, end); cursor = addDays(cursor, 1)) {
+    dates.push(new Date(cursor))
+  }
+  return dates
 }
 
 export function calculatePlan(state: BudgetState, today: Date) {
@@ -1109,15 +1306,19 @@ export function calculatePlan(state: BudgetState, today: Date) {
   const todaySpent = sumForDate(state, isoDate(today))
   const savingReserved = derivedSavingForPeriod(state, state.coachProfile, today)
   const fixedRemaining = recurringAmountBetween(state.fixedItems, today, endForCalc, false)
+  const naturalWeekEndExclusive = addDays(startOfWeek(today), 7)
+  const weekEndExclusive = earlierDate(endForCalc, naturalWeekEndExclusive)
 
   if (overdue) {
     return {
       periodStart: start,
       periodEnd: end,
+      weekEndExclusive,
       daysUntilEnd: 0,
       overdue,
       dailyUnit: 0,
       futureDailyUnit: 0,
+      periodFutureDailyUnit: 0,
       todayAllowance: 0,
       todaySpent,
       todayRemaining: -todaySpent,
@@ -1129,27 +1330,39 @@ export function calculatePlan(state: BudgetState, today: Date) {
     }
   }
 
-  let remainingWeightedDays = 0
+  let periodWeightedDays = 0
   for (let cursor = new Date(today); isBeforeDate(cursor, endForCalc); cursor = addDays(cursor, 1)) {
-    remainingWeightedDays += weightForDate(cursor, state.lifestyleType)
+    periodWeightedDays += weightForDate(cursor, state.lifestyleType)
+  }
+
+  let weekWeightedDays = 0
+  for (let cursor = new Date(today); isBeforeDate(cursor, weekEndExclusive); cursor = addDays(cursor, 1)) {
+    weekWeightedDays += weightForDate(cursor, state.lifestyleType)
   }
 
   const basePool = Math.max(0, state.currentBalance + todaySpent - fixedRemaining - savingReserved)
-  const dailyUnit = remainingWeightedDays > 0 ? basePool / remainingWeightedDays : 0
+  const weekPoolShare = periodWeightedDays > 0 ? weekWeightedDays / periodWeightedDays : 0
+  const weekBasePool = basePool * weekPoolShare
+  const dailyUnit = weekWeightedDays > 0 ? weekBasePool / weekWeightedDays : 0
   const todayWeight = weightForDate(today, state.lifestyleType)
   const todayAllowance = dailyUnit * todayWeight
-  const futureWeightedDays = Math.max(0, remainingWeightedDays - todayWeight)
-  const todayActualOrPlanned = Math.max(todaySpent, todayAllowance)
-  const futureBasePool = Math.max(0, state.currentBalance + todaySpent - fixedRemaining - savingReserved - todayActualOrPlanned)
+  const futureWeightedDays = Math.max(0, weekWeightedDays - todayWeight)
+  const futureBasePool = Math.max(0, weekBasePool - todaySpent)
   const futureDailyUnit = futureWeightedDays > 0 ? futureBasePool / futureWeightedDays : 0
+  const afterWeekWeightedDays = Math.max(0, periodWeightedDays - weekWeightedDays)
+  const overspendBeyondWeek = Math.max(0, todaySpent - weekBasePool)
+  const afterWeekPool = Math.max(0, basePool - weekBasePool - overspendBeyondWeek)
+  const periodFutureDailyUnit = afterWeekWeightedDays > 0 ? afterWeekPool / afterWeekWeightedDays : 0
 
   return {
     periodStart: start,
     periodEnd: end,
+    weekEndExclusive,
     daysUntilEnd: Math.max(0, daysBetween(today, end)),
     overdue,
     dailyUnit,
     futureDailyUnit,
+    periodFutureDailyUnit,
     todayAllowance,
     todaySpent,
     todayRemaining: todayAllowance - todaySpent,
@@ -1254,11 +1467,13 @@ function Field({
   value,
   onChange,
   keyboardType = 'numeric',
+  placeholder,
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   keyboardType?: 'default' | 'numeric' | 'decimal-pad'
+  placeholder?: string
 }) {
   return (
     <View style={styles.field}>
@@ -1268,6 +1483,7 @@ function Field({
         value={value}
         onChangeText={onChange}
         keyboardType={keyboardType}
+        placeholder={placeholder}
         placeholderTextColor={colors.subtle}
       />
     </View>
@@ -1278,10 +1494,12 @@ function MoneyInput({
   label,
   value,
   onChange,
+  placeholder = '원',
 }: {
   label: string
   value: number
   onChange: (value: number) => void
+  placeholder?: string
 }) {
   return (
     <Field
@@ -1289,16 +1507,17 @@ function MoneyInput({
       value={value ? value.toLocaleString('ko-KR') : ''}
       onChange={text => onChange(numeric(text))}
       keyboardType="numeric"
+      placeholder={placeholder}
     />
   )
 }
 
-function DayInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  const [text, setText] = useState(`${value}`)
-  const previousText = useRef(`${value}`)
+function DayInput({ value, onChange, placeholder = '일' }: { value: number; onChange: (value: number) => void; placeholder?: string }) {
+  const [text, setText] = useState(value ? `${value}` : '')
+  const previousText = useRef(value ? `${value}` : '')
 
   useEffect(() => {
-    const nextText = `${value}`
+    const nextText = value ? `${value}` : ''
     previousText.current = nextText
     setText(nextText)
   }, [value])
@@ -1306,10 +1525,12 @@ function DayInput({ value, onChange }: { value: number; onChange: (value: number
   function commit(nextText = text) {
     const nextValue = numeric(nextText)
     if (!nextValue) {
-      setText(previousText.current)
+      previousText.current = ''
+      setText('')
+      onChange(0)
       return
     }
-    const clamped = nextValue ? clampDay(nextValue) : 1
+    const clamped = clampDay(nextValue)
     const committedText = `${clamped}`
     previousText.current = committedText
     setText(committedText)
@@ -1329,7 +1550,7 @@ function DayInput({ value, onChange }: { value: number; onChange: (value: number
       onEndEditing={() => commit()}
       onBlur={() => commit()}
       maxLength={2}
-      placeholder="일"
+      placeholder={placeholder}
       placeholderTextColor={colors.subtle}
     />
   )
@@ -1358,7 +1579,7 @@ function DateField({ label, value, onPress }: { label: string; value?: string; o
 function LifestylePicker({ value, onChange }: { value: LifestyleType; onChange: (value: LifestyleType) => void }) {
   return (
     <View style={styles.field}>
-      <Text style={styles.label}>생활 패턴</Text>
+      <Text style={styles.label}>평일을 1로 봤을 때 주말 배율</Text>
       {LIFESTYLE_OPTIONS.map(option => (
         <TouchableOpacity
           key={option.key}
@@ -1370,7 +1591,7 @@ function LifestylePicker({ value, onChange }: { value: LifestyleType; onChange: 
             <Text style={styles.lifestyleDescription}>{option.description}</Text>
           </View>
           <Text style={styles.lifestyleWeight}>
-            평 {option.weekdayWeight} / 주 {option.weekendWeight}
+            평일 1 / 주말 {option.weekendWeight}
           </Text>
         </TouchableOpacity>
       ))}
@@ -1416,31 +1637,66 @@ function CoachQuestionCard({
   options,
   value,
   onChange,
+  children,
+  customActive = false,
 }: {
   question: string
   description: string
   options: { value: string; label: string }[]
   value: string
   onChange: (value: string) => void
+  children?: React.ReactNode
+  customActive?: boolean
 }) {
   return (
-    <View style={styles.coachQuestionCard}>
-      <Text style={styles.coachEyebrow}>예산 코치</Text>
-      <Text style={styles.coachQuestion}>{question}</Text>
-      <Text style={styles.coachDescription}>{description}</Text>
-      <View style={styles.coachOptionGrid}>
-        {options.map(option => (
-          <TouchableOpacity
-            key={option.value}
-            style={[styles.coachOption, value === option.value && styles.coachOptionActive]}
-            onPress={() => onChange(option.value)}
-          >
-            <Text style={[styles.coachOptionText, value === option.value && styles.coachOptionTextActive]}>
-              {option.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+    <View style={styles.foodQuestionCard}>
+      <View style={styles.foodQuestionHeader}>
+        <View style={styles.foodQuestionDot} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.foodQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{question}</Text>
+          <Text style={styles.foodQuestionDescription} numberOfLines={2}>{description}</Text>
+        </View>
       </View>
+      <View style={styles.foodOptionGrid}>
+        {options.map(option => {
+          const active = !customActive && value === option.value
+          const [title, amount] = option.label.split(' · ')
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[styles.foodOption, active && styles.foodOptionActive]}
+              onPress={() => onChange(option.value)}
+              activeOpacity={0.82}
+            >
+              <Text style={[styles.foodOptionText, active && styles.foodOptionTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                {title}
+              </Text>
+              {amount && (
+                <Text style={[styles.foodOptionAmount, active && styles.foodOptionAmountActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                  {amount}
+                </Text>
+              )}
+            </TouchableOpacity>
+          )
+        })}
+        {children}
+      </View>
+    </View>
+  )
+}
+
+function CoachMoneyOption({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <View style={[styles.foodMoneyOption, value > 0 && styles.foodMoneyOptionActive]}>
+      <Text style={styles.foodMoneyLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{label}</Text>
+      <TextInput
+        style={styles.foodMoneyInput}
+        value={value ? value.toLocaleString('ko-KR') : ''}
+        keyboardType="numeric"
+        onChangeText={text => onChange(numeric(text))}
+        placeholder="원"
+        placeholderTextColor={colors.subtle}
+      />
     </View>
   )
 }
@@ -1500,8 +1756,23 @@ export default function App() {
   const [setupReturnStep, setSetupReturnStep] = useState<number | null>(null)
   const [balanceHelperOpen, setBalanceHelperOpen] = useState(false)
   const [helperAccountBalance, setHelperAccountBalance] = useState(0)
-  const [helperCommitted, setHelperCommitted] = useState(0)
+  const [helperCardDebt, setHelperCardDebt] = useState(0)
+  const [helperLoanDebt, setHelperLoanDebt] = useState(0)
+  const [helperScheduled, setHelperScheduled] = useState(0)
+  const [calendarPicker, setCalendarPicker] = useState<'year' | 'month' | null>(null)
+  const calendarPickerRef = useRef<ScrollView>(null)
+  const [calendarPagerWidth, setCalendarPagerWidth] = useState(0)
+  const calendarPagerWidthRef = useRef(0)
+  const calendarPagerResetPendingRef = useRef(false)
+  const calendarPagerX = useRef(new Animated.Value(0)).current
+  const [resultDetailsOpen, setResultDetailsOpen] = useState(false)
+  const [savingChoice, setSavingChoice] = useState<'ai' | 'custom'>('ai')
+  const [selectedComfort, setSelectedComfort] = useState<'loose' | 'balanced' | 'tight' | null>(null)
+  const [datePoolOpen, setDatePoolOpen] = useState(false)
+  const [eventReserveOpen, setEventReserveOpen] = useState(false)
+  const [blankIncomeDayIds, setBlankIncomeDayIds] = useState<string[]>([])
   const resultSeededRef = useRef(false)
+  const comfortBaselineRef = useRef<{ savingGoal: number; envelopes: BudgetEnvelope[] } | null>(null)
   const [keyboardVisible, setKeyboardVisible] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [modalAmount, setModalAmount] = useState('')
@@ -1517,6 +1788,7 @@ export default function App() {
   const [transferFrom, setTransferFrom] = useState<Category>('쇼핑')
   const [transferTo, setTransferTo] = useState<Category>('식비')
   const [transferAmount, setTransferAmount] = useState(0)
+  const [transferPickerSide, setTransferPickerSide] = useState<'from' | 'to' | null>(null)
   const quickMemoRef = useRef<TextInput>(null)
   const modalMemoRef = useRef<TextInput>(null)
   const [today, setToday] = useState(() => new Date())
@@ -1531,9 +1803,36 @@ export default function App() {
     return () => sub.remove()
   }, [today])
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
+  function calendarPickerOffset(kind: 'year' | 'month' | null) {
+    if (kind === 'year') return Math.max(0, (calendarMonth.getFullYear() - 2000) * 54 - 108)
+    if (kind === 'month') return Math.max(0, calendarMonth.getMonth() * 54 - 108)
+    return 0
+  }
+
+  useEffect(() => {
+    if (!calendarPicker) return
+    const offset = calendarPickerOffset(calendarPicker)
+    const raf = requestAnimationFrame(() => {
+      calendarPickerRef.current?.scrollTo({ y: offset, animated: false })
+    })
+    const timer = setTimeout(() => {
+      calendarPickerRef.current?.scrollTo({ y: offset, animated: false })
+    }, 80)
+    return () => {
+      cancelAnimationFrame(raf)
+      clearTimeout(timer)
+    }
+  }, [calendarPicker, calendarMonth])
+  useLayoutEffect(() => {
+    if (!calendarPagerResetPendingRef.current) return
+    const width = calendarPagerWidthRef.current
+    if (!width) return
+    calendarPagerX.setValue(-(width + CALENDAR_PAGE_GAP))
+    calendarPagerResetPendingRef.current = false
+  }, [calendarMonth, calendarPagerWidth, calendarPagerX])
   const todayKey = isoDate(today)
   const plan = calculatePlan(state, today)
-  const envelopeStatuses = calculateEnvelopeStatus(state, today)
+  const envelopeStatuses = calculateEnvelopeStatusThroughPeriod(state, today)
   const atSetupResult = SETUP_STEPS[setupStep]?.kind === 'result'
 
   const [reduceMotion, setReduceMotion] = useState(false)
@@ -1586,6 +1885,13 @@ export default function App() {
   }, [expenseCount, expenseBounce, reduceMotion])
 
   useEffect(() => {
+    if (SETUP_STEPS[setupStep]?.kind !== 'result') {
+      comfortBaselineRef.current = null
+      setSelectedComfort(null)
+    }
+  }, [setupStep])
+
+  useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then(value => {
         if (value) {
@@ -1633,6 +1939,11 @@ export default function App() {
     if (!periodBounds(state, today).overdue) return
     setState(prev => closePeriodNoIncome(prev, today))
   }, [loaded, state.setupComplete, state.incomes.length, state.currentPeriodStart, state.noIncomeMode, state.targetDate, today])
+
+  useEffect(() => {
+    if (!loaded || !state.setupComplete) return
+    setState(prev => ensurePastDailySnapshots(prev, today))
+  }, [loaded, state.setupComplete, state.currentPeriodStart, state.expenses, state.noSpendDates, todayKey])
 
   // 결과 스텝에 처음 들어올 때 한 번, 제안 저축액·예산을 실제 state에 시드한다.
   // 이후 입력칸은 state에 직접 바인딩되므로 사용자가 손본 값이 유지된다.
@@ -1751,6 +2062,38 @@ export default function App() {
     setModalCategory(item.category)
   }
 
+  function expenseEnvelopeRemaining(category: Category, excludingExpenseId?: string | null) {
+    const checkState = excludingExpenseId
+      ? { ...state, expenses: state.expenses.filter(item => item.id !== excludingExpenseId) }
+      : state
+    return calculateEnvelopeStatusThroughPeriod(checkState, today).find(envelope => envelope.name === category)?.remaining ?? 0
+  }
+
+  function openTransferForCategory(category: Category) {
+    const source = envelopeStatuses.find(envelope => envelope.name !== category && envelope.remaining > 0)?.name
+      ?? CATEGORIES.find(item => item !== category)
+      ?? '식비'
+    setTransferFrom(source)
+    setTransferTo(category)
+    closeExpenseModal()
+    setTab('envelopes')
+    setTransferOpen(true)
+  }
+
+  function canRecordModalExpense(category: Category, amount: number, excludingExpenseId?: string | null) {
+    const remaining = expenseEnvelopeRemaining(category, excludingExpenseId)
+    if (amount <= remaining) return true
+    Alert.alert(
+      '예산 잔액 부족',
+      `${category} 예산 잔액은 ${money(Math.max(0, remaining))}이에요. 예산 탭에서 다른 예산의 금액을 옮긴 뒤 기록해주세요.`,
+      [
+        { text: '닫기', style: 'cancel' },
+        { text: '예산 옮기기', onPress: () => openTransferForCategory(category) },
+      ],
+    )
+    return false
+  }
+
   function saveModalExpense() {
     if (!selectedDate) return
     const amount = numeric(modalAmount)
@@ -1758,6 +2101,7 @@ export default function App() {
       Alert.alert('금액 입력', '쓴 금액을 입력해주세요.')
       return
     }
+    if (!canRecordModalExpense(modalCategory, amount, editingExpenseId)) return
     if (editingExpenseId) {
       setState(prev => stateAfterUpdateExpense(prev, editingExpenseId, { amount, memo: modalMemo.trim(), category: modalCategory }))
       setEditingExpenseId(null)
@@ -1770,6 +2114,7 @@ export default function App() {
     Keyboard.dismiss()
   }
 
+
   function closeExpenseModal() {
     setSelectedDate(null)
     setEditingExpenseId(null)
@@ -1780,12 +2125,14 @@ export default function App() {
 
   function addIncome() {
     const cadence: Cadence = incomeSetupMode === 'irregular' ? 'irregular' : 'monthly'
+    const id = makeId()
+    setBlankIncomeDayIds(prev => [...prev, id])
     patch({
       incomes: [
         ...state.incomes,
         {
-          id: makeId(),
-          name: cadence === 'irregular' ? '' : '월급',
+          id,
+          name: '',
           amount: null,
           cadence,
           anchorDate: isoDate(clampDayToMonth(today.getFullYear(), today.getMonth(), cadence === 'monthly' ? 25 : today.getDate())),
@@ -1805,7 +2152,7 @@ export default function App() {
   }
 
   function addFixed() {
-    patch({ fixedItems: [...state.fixedItems, { id: makeId(), name: '', day: 25, amount: 0 }] })
+    patch({ fixedItems: [...state.fixedItems, { id: makeId(), name: '', day: 0, amount: 0 }] })
   }
 
   function updateEnvelope(id: string, updates: Omit<Partial<BudgetEnvelope>, 'name'> & { name?: string }) {
@@ -1816,7 +2163,27 @@ export default function App() {
       ...(typeof clampedLimit === 'number' ? { periodLimit: clampedLimit } : {}),
       ...(typeof name === 'string' ? { name: normalizeCategory(name) } : {}),
     }
-    patch({ envelopes: state.envelopes.map(item => item.id === id ? { ...item, ...normalizedUpdates } : item) })
+    const nextEnvelopes = state.envelopes.map(item => item.id === id ? { ...item, ...normalizedUpdates } : item)
+    patch({
+      envelopes: nextEnvelopes,
+      currentPeriodPlan: nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+    })
+  }
+
+  function rebalanceEnvelopesForSavingGoal(nextSavingGoal: number) {
+    const currentTotal = state.envelopes.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
+    const nextTotal = Math.max(0, currentTotal + state.savingGoal - nextSavingGoal)
+    const nextEnvelopes = state.envelopes.map(envelope => ({
+      ...envelope,
+      periodLimit: currentTotal > 0
+        ? Math.max(0, Math.round((envelope.periodLimit / currentTotal) * nextTotal))
+        : Math.round(nextTotal / Math.max(state.envelopes.length, 1)),
+    }))
+    patch({
+      savingGoal: nextSavingGoal,
+      envelopes: nextEnvelopes,
+      currentPeriodPlan: nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+    })
   }
 
   function updateSetupEnvelopeLimit(id: string, periodLimit: number) {
@@ -1888,6 +2255,13 @@ export default function App() {
     setTransferAmount(0)
     setTransferFrom('쇼핑')
     setTransferTo('식비')
+    setTransferPickerSide(null)
+  }
+
+  function swapTransferSides() {
+    setTransferFrom(transferTo)
+    setTransferTo(transferFrom)
+    setTransferAmount(0)
   }
 
   function closeReportModal() {
@@ -1930,18 +2304,62 @@ export default function App() {
   }
 
   function renderSetup() {
-    const savingStep = 11
-    const resultStep = 12
+    const savingStep = 12
+    const resultStep = 13
     const totalSetupSteps = TOTAL_SETUP_STEPS
     const savingBreakdown = suggestSavingBreakdown(state, coachProfile, today)
-    const suggestedSaving = state.savingEnabled ? savingBreakdown.firstPeriod : 0
+    const suggestedSaving = state.savingEnabled ? state.savingGoal || savingBreakdown.firstPeriod : 0
     const fixedTotal = state.fixedItems.reduce((sum, item) => sum + item.amount, 0)
     const envelopeTotal = state.envelopes.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
+    const helperCommitted = helperCardDebt + helperLoanDebt + helperScheduled
     const helperFreeBalance = Math.max(helperAccountBalance - helperCommitted, 0)
+    const { end: setupPeriodEnd } = periodBounds(state, today)
+    const fixedForPeriod = recurringAmountBetween(state.fixedItems, today, setupPeriodEnd, false)
+    const spendableThisPeriod = Math.max(state.currentBalance - fixedForPeriod - suggestedSaving, 0)
+    const expectedMonthlySpending = coachSpendingMonthly(state, coachProfile)
     const monthlyBudgets = monthlyEnvelopeBudgets(state, coachProfile)
     const monthlyBudgetTotal = CATEGORIES.reduce((sum, category) => sum + monthlyBudgets[category], 0)
     const monthlyBudgetPool = monthlyLivingBudget(state, coachProfile)
+    const setupPeriodDays = Math.max(1, daysBetween(today, setupPeriodEnd))
+    const monthlyPlannedEnvelopeTotal = Math.round((envelopeTotal / setupPeriodDays) * 30)
+    const expectedPeriodSpending = Math.round(expectedMonthlySpending * (setupPeriodDays / 30))
+    const budgetIsTight = envelopeTotal < expectedPeriodSpending * 0.9
+    const comfortMultiplier = (level: 'loose' | 'balanced' | 'tight') => level === 'loose' ? 0.85 : level === 'tight' ? 1.15 : 1
+    const comfortPreset = (level: 'loose' | 'balanced' | 'tight') => {
+      const baseline = comfortBaselineRef.current ?? {
+        savingGoal: state.savingGoal,
+        envelopes: state.envelopes.map(envelope => ({ ...envelope })),
+      }
+      const baseEnvelopeTotal = baseline.envelopes.reduce((sum, envelope) => sum + envelope.periodLimit, 0)
+      const wantedEnvelopeTotal = Math.round(baseEnvelopeTotal * comfortMultiplier(level))
+      const nextSavingGoal = Math.max(0, baseline.savingGoal + baseEnvelopeTotal - wantedEnvelopeTotal)
+      const nextEnvelopeTotal = Math.max(0, baseline.savingGoal + baseEnvelopeTotal - nextSavingGoal)
+      const nextEnvelopes = baseline.envelopes.map(envelope => ({
+        ...envelope,
+        periodLimit: baseEnvelopeTotal > 0
+          ? Math.max(0, Math.round((envelope.periodLimit / baseEnvelopeTotal) * nextEnvelopeTotal))
+          : Math.round(nextEnvelopeTotal / Math.max(baseline.envelopes.length, 1)),
+      }))
+      return { nextSavingGoal, nextEnvelopeTotal, nextEnvelopes }
+    }
+    const comfortBudgetTotal = (level: 'loose' | 'balanced' | 'tight') => comfortPreset(level).nextEnvelopeTotal
     const canStartSetup = state.currentBalance > 0 && (state.incomes.length > 0 || incomeSetupMode === 'none')
+
+    function applyBudgetComfort(level: 'loose' | 'balanced' | 'tight') {
+      if (!comfortBaselineRef.current) {
+        comfortBaselineRef.current = {
+          savingGoal: state.savingGoal,
+          envelopes: state.envelopes.map(envelope => ({ ...envelope })),
+        }
+      }
+      const preset = comfortPreset(level)
+      setSelectedComfort(level)
+      patch({
+        savingGoal: preset.nextSavingGoal,
+        envelopes: preset.nextEnvelopes,
+        currentPeriodPlan: preset.nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+      })
+    }
 
     function advanceSetup() {
       if (setupReturnStep !== null && setupStep !== resultStep) {
@@ -1959,7 +2377,7 @@ export default function App() {
     function makeIncome(cadence: Cadence): IncomeItem {
       return {
         id: makeId(),
-        name: cadence === 'weekly' ? '주급' : cadence === 'irregular' ? '수입' : '월급',
+        name: '',
         amount: null,
         cadence,
         anchorDate: isoDate(clampDayToMonth(today.getFullYear(), today.getMonth(), cadence === 'monthly' ? 25 : today.getDate())),
@@ -1973,17 +2391,19 @@ export default function App() {
         patch({ incomes: [], noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })
       } else {
         const cadence: Cadence = mode === 'irregular' ? 'irregular' : 'monthly'
-        patch({ incomes: [makeIncome(cadence)] })
+        const income = makeIncome(cadence)
+        setBlankIncomeDayIds([income.id])
+        patch({ incomes: [income] })
       }
-      setSetupStep(2)
+      setSetupStep(3)
     }
 
     function goNext() {
-      if (setupStep === 0 && state.currentBalance <= 0) {
+      if (setupStep === 1 && state.currentBalance <= 0) {
         Alert.alert('잔액을 입력해주세요')
         return
       }
-      if (setupStep === 2) {
+      if (setupStep === 3) {
         if (incomeSetupMode === 'none') {
           if (state.noIncomeMode === 'targetDate' && !state.targetDate) {
             Alert.alert('날짜를 선택해주세요', '이 돈으로 언제까지 써야 하는지 선택해주세요.')
@@ -2027,14 +2447,25 @@ export default function App() {
                 spellCheck={false}
               />
             </View>
+            {item.cadence === 'monthly' ? (
+              <View style={styles.setupDayField}>
+                <Text style={styles.miniLabel}>날짜</Text>
+                <DayInput value={blankIncomeDayIds.includes(item.id) ? 0 : incomeDay(item)} onChange={day => { setBlankIncomeDayIds(prev => prev.filter(id => id !== item.id)); updateIncome(item.id, incomeWithDay(item, day || 1, today)) }} />
+              </View>
+            ) : (
+              <View style={styles.setupDateField}>
+                <Text style={styles.miniLabel}>날짜</Text>
+                <DateField label="" value={item.anchorDate} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })} />
+              </View>
+            )}
             <View style={styles.setupMoneyField}>
-              <Text style={styles.miniLabel}>금액 선택</Text>
+              <Text style={styles.miniLabel}>금액</Text>
               <TextInput
                 style={styles.input}
                 value={item.amount ? item.amount.toLocaleString('ko-KR') : ''}
                 keyboardType="numeric"
                 onChangeText={amount => updateIncome(item.id, { amount: amount.trim() ? numeric(amount) : null })}
-                placeholder="미정"
+                placeholder="원"
                 placeholderTextColor={colors.subtle}
               />
             </View>
@@ -2070,28 +2501,16 @@ export default function App() {
 
     function renderIncomeTimingRow(item: IncomeItem) {
       return (
-        <View style={styles.incomeTimingRow}>
-          <View style={styles.incomeCadenceChips}>
-            {CADENCE_OPTIONS.filter(option => option.key !== 'irregular').map(option => (
-              <TouchableOpacity
-                key={option.key}
-                style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
-                onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
-              >
-                <Text style={[styles.chipText, item.cadence === option.key && styles.chipTextActive]}>{option.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          {item.cadence === 'monthly' ? (
-            <View style={styles.inlineDayField}>
-              <Text style={styles.miniLabel}>매달 며칠?</Text>
-              <DayInput value={incomeDay(item)} onChange={day => updateIncome(item.id, incomeWithDay(item, day, today))} />
-            </View>
-          ) : (
-            <View style={{ flex: 1 }}>
-              <DateField label="기준 입금일" value={item.anchorDate} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })} />
-            </View>
-          )}
+        <View style={styles.incomeCadenceChips}>
+          {CADENCE_OPTIONS.map(option => (
+            <TouchableOpacity
+              key={option.key}
+              style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
+              onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
+            >
+              <Text style={[styles.chipText, styles.cadenceChipText, item.cadence === option.key && styles.chipTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{option.label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
       )
     }
@@ -2100,17 +2519,36 @@ export default function App() {
       if (setupStep === 0) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>지금 통장에 있는 돈이{"\n"}얼마예요?</Text>
-            <Text style={styles.setupQuestionCopy}>생활비로 쓸 통장 잔액 그대로 적어주세요. 저축은 마지막 단계에서 코치가 자동으로 떼어드려요.</Text>
-            <MoneyInput label="통장 잔액" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>하루한도 계산 방식</Text>
+            <Text style={styles.setupQuestionCopy}>먼저 통장 잔액에서 카드값·빚·고정비를 빼요. 그 다음 생활패턴으로 예상 지출을 잡고, 이번 주 예산을 먼저 나눠서 오늘 소비를 남은 날에 반영해요.</Text>
+            <View style={styles.suggestionCard}>
+              <BreakdownRow label="1. 시작 생활비" value="통장 잔액 - 카드값/빚" />
+              <BreakdownRow label="2. 필수 차감" value="고정비 + 저축" />
+              <BreakdownRow label="3. 하루한도" value="이번 주 남은 돈 ÷ 남은 날" tone="plus" />
+            </View>
+          </View>
+        )
+      }
+
+      if (setupStep === 1) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>생활비로 쓸 수 있는 돈이 얼마예요?</Text>
+            <Text style={styles.setupQuestionCopy}>먼저 통장 잔액을 적고, 아래에서 카드값·빚·예정 이체를 빼면 실제 시작 생활비가 나와요.</Text>
+            <MoneyInput label="생활비 통장 잔액 (원)" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
             <TouchableOpacity style={styles.backButton} onPress={() => setBalanceHelperOpen(prev => !prev)}>
-              <Text style={styles.addText}>카드값·약속된 돈이 있다면</Text>
+              <Text style={styles.addText}>카드값·빚·예정 이체를 나눠서 빼기</Text>
             </TouchableOpacity>
             {balanceHelperOpen && (
               <View style={styles.suggestionCard}>
                 <MoneyInput label="통장 전체 잔액" value={helperAccountBalance} onChange={setHelperAccountBalance} />
-                <MoneyInput label="카드값·약속" value={helperCommitted} onChange={setHelperCommitted} />
-                <BreakdownRow label="이번 입금까지 쓸 돈" value={money(helperFreeBalance)} tone="plus" />
+                <MoneyInput label="저번달 쓴 카드값" value={helperCardDebt} onChange={setHelperCardDebt} />
+                <MoneyInput label="빚·대출 상환" value={helperLoanDebt} onChange={setHelperLoanDebt} />
+                <MoneyInput label="약속된 이체" value={helperScheduled} onChange={setHelperScheduled} />
+                <View style={styles.breakdownDivider} />
+                <BreakdownRow label="통장 전체 잔액" value={money(helperAccountBalance)} />
+                <BreakdownRow label="빼야 할 돈 합계" value={`-${money(helperCommitted)}`} tone="minus" />
+                <BreakdownRow label="실제 시작 생활비" value={money(helperFreeBalance)} tone="plus" />
                 <TouchableOpacity
                   style={styles.setupPrimaryButton}
                   onPress={() => {
@@ -2126,10 +2564,10 @@ export default function App() {
         )
       }
 
-      if (setupStep === 1) {
+      if (setupStep === 2) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>돈은 어떻게 들어와요?</Text>
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>돈은 어떻게 들어와요?</Text>
             <Text style={styles.setupQuestionCopy}>정기적이면 자동으로 다음 입금일을 계산해드려요. 들쭉날쭉이거나 지금 수입이 없어도 괜찮아요.</Text>
             {([
               ['regular', '정기적으로 들어와요', '월급·용돈·주급 등'],
@@ -2151,30 +2589,26 @@ export default function App() {
         )
       }
 
-      if (setupStep === 2) {
+      if (setupStep === 3) {
         return (
           <View style={styles.setupSingleQuestion}>
             {incomeSetupMode === 'none' ? (
               <View style={styles.setupSingleQuestion}>
-                <Text style={styles.setupQuestionTitle}>이 돈으로 언제까지 써야 해요?</Text>
+                <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>이 돈으로 언제까지 써야 해요?</Text>
                 <Text style={styles.setupQuestionCopy}>날짜가 있으면 목표일까지 나눠 쓰고, 없으면 30일 페이스로 관리해요.</Text>
-                <View style={styles.chipGrid}>
-                  <View style={styles.chipSlot}>
-                    <TouchableOpacity
-                      style={[styles.chip, state.noIncomeMode === 'targetDate' && styles.chipActive]}
-                      onPress={() => patch({ noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })}
-                    >
-                      <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.chipTextActive]}>특정 날짜까지</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.chipSlot}>
-                    <TouchableOpacity
-                      style={[styles.chip, state.noIncomeMode === 'openEnded' && styles.chipActive]}
-                      onPress={() => patch({ noIncomeMode: 'openEnded' })}
-                    >
-                      <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.chipTextActive]}>정해진 날 없음</Text>
-                    </TouchableOpacity>
-                  </View>
+                <View style={styles.wideChoiceRow}>
+                  <TouchableOpacity
+                    style={[styles.wideChoiceButton, state.noIncomeMode === 'targetDate' && styles.wideChoiceActive]}
+                    onPress={() => patch({ noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })}
+                  >
+                    <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.wideChoiceActiveText]}>특정 날짜까지</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.wideChoiceButton, state.noIncomeMode === 'openEnded' && styles.wideChoiceActive]}
+                    onPress={() => patch({ noIncomeMode: 'openEnded' })}
+                  >
+                    <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.wideChoiceActiveText]}>정해진 날 없음</Text>
+                  </TouchableOpacity>
                 </View>
                 {state.noIncomeMode === 'targetDate' && (
                   <DateField label="목표 날짜" value={state.targetDate} onPress={() => setDatePickerTarget({ kind: 'targetDate' })} />
@@ -2182,7 +2616,7 @@ export default function App() {
               </View>
             ) : (
               <>
-                <Text style={styles.setupQuestionTitle}>{incomeSetupMode === 'regular' ? '돈은 언제, 얼마씩 들어와요?' : '최근 수입 패턴을 알려주세요'}</Text>
+                <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{incomeSetupMode === 'regular' ? '돈은 언제, 얼마씩 들어와요?' : '최근 수입 패턴을 알려주세요'}</Text>
                 <Text style={styles.setupQuestionCopy}>금액은 비워도 됩니다. 다음 입금까지 며칠인지 계산할 때만 써요.</Text>
                 {state.incomes.map(renderIncomeFields)}
                 {state.incomes.length === 0 && (
@@ -2197,24 +2631,11 @@ export default function App() {
         )
       }
 
-      if (setupStep === 3) {
+      if (setupStep === 4) {
         return (
           <View style={styles.setupSingleQuestion}>
             <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>매달 거의 고정으로 빠지는 돈이 있어요?</Text>
-            <Text style={styles.setupQuestionCopy}>월세, 통신비, 구독, 보험, 헬스 같은 것들. 없으면 그냥 다음.</Text>
-            <View style={styles.chipGrid}>
-              {([
-                ['solo', '자취'],
-                ['family', '본가'],
-                ['share', '룸쉐어'],
-              ] as [HousingType, string][]).map(([housing, label]) => (
-                <View key={housing} style={styles.chipSlot}>
-                  <TouchableOpacity style={[styles.chip, state.housing === housing && styles.chipActive]} onPress={() => patch({ housing })}>
-                    <Text style={[styles.chipText, state.housing === housing && styles.chipTextActive]}>{label}</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
+            <Text style={styles.setupQuestionCopy}>전기세, 통신비, 구독, 보험, 헬스처럼 날짜가 정해진 필수 고정비예요. 없으면 그냥 다음.</Text>
             {state.fixedItems.length === 0 && (
               <View style={styles.emptyBox}><Text style={styles.emptyText}>없으면 건너뛰어도 됩니다.</Text></View>
             )}
@@ -2226,7 +2647,7 @@ export default function App() {
                     style={styles.input}
                     value={item.name}
                     onChangeText={name => updateFixed(item.id, { name })}
-                    placeholder="통신비"
+                    placeholder="이름"
                     placeholderTextColor={colors.subtle}
                     selectTextOnFocus
                     autoCorrect={false}
@@ -2235,11 +2656,11 @@ export default function App() {
                 </View>
                 <View style={styles.setupDayField}>
                   <Text style={styles.miniLabel}>날짜 (일)</Text>
-                  <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} />
+                  <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} placeholder="날짜" />
                 </View>
                 <View style={styles.setupMoneyField}>
                   <Text style={styles.miniLabel}>금액</Text>
-                  <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
+                  <TextInput style={styles.input} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} placeholder="원" placeholderTextColor={colors.subtle} />
                 </View>
                 <TouchableOpacity
                   style={styles.setupRemoveButton}
@@ -2257,11 +2678,11 @@ export default function App() {
         )
       }
 
-      if (setupStep === 4) {
+      if (setupStep === 5) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>매달 자동으로 떼둘 돈이 있어요?</Text>
-            <Text style={styles.setupQuestionCopy}>데이트 통장, 경조사처럼 매달 따로 묶어둘 돈이 있으면 적어요. 비워두면 모두 일일 예산에 포함돼요.</Text>
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>생활비와 분리해서 보관할 돈이 있어요?</Text>
+            <Text style={styles.setupQuestionCopy}>데이트 통장, 경조사 적립처럼 생활비로 쓰면 안 되는 돈이에요. 필수 고정비와는 따로 계산해요.</Text>
             <View style={styles.suggestionCard}>
               <View style={styles.switchRow}>
                 <View style={{ flex: 1 }}>
@@ -2269,15 +2690,15 @@ export default function App() {
                   <Text style={styles.suggestionCopy}>공동 계좌를 굴리고 있으면 월 본인 부담액을 넣으세요.</Text>
                 </View>
                 <Switch
-                  value={state.datePoolMonthly > 0}
-                  onValueChange={enabled => patch({ datePoolMonthly: enabled ? state.datePoolMonthly || 100000 : 0 })}
+                  value={datePoolOpen || state.datePoolMonthly > 0}
+                  onValueChange={enabled => { setDatePoolOpen(enabled); patch({ datePoolMonthly: enabled ? 0 : 0 }) }}
                   trackColor={{ false: colors.borderMd, true: colors.teal }}
                   thumbColor={colors.surface}
                   ios_backgroundColor={colors.borderMd}
                 />
               </View>
-              {state.datePoolMonthly > 0 && (
-                <MoneyInput label="월 본인 부담액" value={state.datePoolMonthly} onChange={value => patch({ datePoolMonthly: value })} />
+              {(datePoolOpen || state.datePoolMonthly > 0) && (
+                <MoneyInput label="월 본인 부담액" value={state.datePoolMonthly} onChange={value => patch({ datePoolMonthly: value })} placeholder="금액" />
               )}
             </View>
             <View style={styles.suggestionCard}>
@@ -2287,27 +2708,17 @@ export default function App() {
                   <Text style={styles.suggestionCopy}>명절·생일·기념일 같은 갑작스러운 지출 대비. 권장 3-5만.</Text>
                 </View>
                 <Switch
-                  value={state.eventReserveMonthly > 0}
-                  onValueChange={enabled => patch({ eventReserveMonthly: enabled ? state.eventReserveMonthly || 40000 : 0 })}
+                  value={eventReserveOpen || state.eventReserveMonthly > 0}
+                  onValueChange={enabled => { setEventReserveOpen(enabled); patch({ eventReserveMonthly: enabled ? 0 : 0 }) }}
                   trackColor={{ false: colors.borderMd, true: colors.teal }}
                   thumbColor={colors.surface}
                   ios_backgroundColor={colors.borderMd}
                 />
               </View>
-              {state.eventReserveMonthly > 0 && (
-                <MoneyInput label="월 적립액" value={state.eventReserveMonthly} onChange={value => patch({ eventReserveMonthly: value })} />
+              {(eventReserveOpen || state.eventReserveMonthly > 0) && (
+                <MoneyInput label="월 적립액" value={state.eventReserveMonthly} onChange={value => patch({ eventReserveMonthly: value })} placeholder="금액" />
               )}
             </View>
-          </View>
-        )
-      }
-
-      if (setupStep === 5) {
-        return (
-          <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>평일이랑 주말 소비 리듬은{"\n"}어때요?</Text>
-            <Text style={styles.setupQuestionCopy}>하루한도가 요일마다 다르게 분배돼요. 모르면 균등형.</Text>
-            <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
           </View>
         )
       }
@@ -2315,29 +2726,22 @@ export default function App() {
       if (setupStep === 6) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <CoachQuestionCard
-              question="평일 점심은 어떻게 해결해요?"
-              description="점심과 저녁 답으로 식비 예산을 직접 계산해요."
-              options={[
-                { value: 'provided', label: '회사·학교에서 나와요' },
-                { value: 'lunchbox', label: '도시락 싸 가요' },
-                { value: 'buy', label: '사 먹어요' },
-                { value: 'delivery', label: '배달도 자주' },
-              ]}
-              value={coachProfile.lunch}
-              onChange={value => setCoachProfile(prev => ({ ...prev, lunch: value as BudgetCoachProfile['lunch'] }))}
-            />
-            <CoachQuestionCard
-              question="저녁은 보통 어떻게?"
-              description="저녁 패턴까지 합쳐 식비 월 예산을 잡아요."
-              options={[
-                { value: 'home', label: '거의 해먹어요' },
-                { value: 'mixed', label: '반반 정도' },
-                { value: 'buy', label: '거의 사 먹어요' },
-              ]}
-              value={coachProfile.dinner}
-              onChange={value => setCoachProfile(prev => ({ ...prev, dinner: value as BudgetCoachProfile['dinner'] }))}
-            />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>사는 형태와 주말 소비 리듬을 알려주세요</Text>
+            <Text style={styles.setupQuestionCopy}>사는 형태는 생활비 추정에 쓰고, 주말 배율은 하루한도 분배에 써요. 평일은 항상 1로 고정돼요.</Text>
+            <View style={styles.chipGrid}>
+              {([
+                ['family', '본가'],
+                ['solo', '자취'],
+                ['share', '룸쉐어'],
+              ] as [HousingType, string][]).map(([housing, label]) => (
+                <View key={housing} style={styles.chipSlot}>
+                  <TouchableOpacity style={[styles.chip, state.housing === housing && styles.chipActive]} onPress={() => patch({ housing })}>
+                    <Text style={[styles.chipText, state.housing === housing && styles.chipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+            <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
           </View>
         )
       }
@@ -2345,9 +2749,81 @@ export default function App() {
       if (setupStep === 7) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>친구 약속은 한 달에 어느 정도예요?</Text>
-            <Field label="한 달 약속 횟수" value={`${coachProfile.socialFrequency}`} onChange={value => setCoachProfile(prev => ({ ...prev, socialFrequency: Math.min(30, numeric(value)) }))} keyboardType="numeric" />
-            <MoneyInput label="한 번 평균 금액" value={coachProfile.socialPerVisit} onChange={value => setCoachProfile(prev => ({ ...prev, socialPerVisit: value }))} />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>식비를 조금 자세히 볼게요</Text>
+            <Text style={styles.setupQuestionCopy}>사먹어요는 1만 원 안팎, 배달·비싼 외식은 1.5만~2.5만 원대로 계산해요. 실제와 다르면 마지막 화면에서 식비 예산을 직접 고칠 수 있어요.</Text>
+            <CoachQuestionCard
+              question="아침은 보통 어떻게 먹어요?"
+              description="아침을 안 먹는지, 집에서 간단히 먹는지, 사 먹는지 구분해요."
+              options={[
+                { value: 'none', label: '거의 안 먹어요 · 0원' },
+                { value: 'home', label: '집에서 간단히 · 월 3만' },
+                { value: 'buy', label: '사 먹어요 · 월 9만' },
+              ]}
+              value={coachProfile.breakfast}
+              onChange={value => setCoachProfile(prev => ({ ...prev, breakfast: value as BudgetCoachProfile['breakfast'], breakfastMonthly: 0 }))}
+              customActive={coachProfile.breakfastMonthly > 0}
+            >
+              <CoachMoneyOption label="직접 입력" value={coachProfile.breakfastMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, breakfastMonthly: value }))} />
+            </CoachQuestionCard>
+            <CoachQuestionCard
+              question="점심은 보통 어떻게 먹어요?"
+              description="점심 제공 여부가 식비를 크게 바꿔요."
+              options={[
+                { value: 'provided', label: '회사·학교에서 나와요 · 0원' },
+                { value: 'lunchbox', label: '도시락/집밥 · 월 3만' },
+                { value: 'buy', label: '사 먹어요 · 월 18만' },
+                { value: 'delivery', label: '비싼 동네/배달 · 월 26만' },
+              ]}
+              value={coachProfile.lunch}
+              onChange={value => setCoachProfile(prev => ({ ...prev, lunch: value as BudgetCoachProfile['lunch'], lunchMonthly: 0 }))}
+              customActive={coachProfile.lunchMonthly > 0}
+            >
+              <CoachMoneyOption label="직접 입력" value={coachProfile.lunchMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, lunchMonthly: value }))} />
+            </CoachQuestionCard>
+            <CoachQuestionCard
+              question="저녁은 보통 어떻게 먹어요?"
+              description="혼밥과 외식 비중을 기준으로 잡아요."
+              options={[
+                { value: 'home', label: '집밥 위주 · 월 12만' },
+                { value: 'mixed', label: '반반이에요 · 월 22만' },
+                { value: 'buy', label: '외식 위주 · 월 33만' },
+                { value: 'delivery', label: '배달/비싼 외식 · 월 45만' },
+              ]}
+              value={coachProfile.dinner}
+              onChange={value => setCoachProfile(prev => ({ ...prev, dinner: value as BudgetCoachProfile['dinner'], dinnerMonthly: 0 }))}
+              customActive={coachProfile.dinnerMonthly > 0}
+            >
+              <CoachMoneyOption label="직접 입력" value={coachProfile.dinnerMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, dinnerMonthly: value }))} />
+            </CoachQuestionCard>
+            <CoachQuestionCard
+              question="커피·간식은 어느 정도예요?"
+              description="작게 자주 새는 돈이라 따로 잡아요."
+              options={[
+                { value: 'none', label: '거의 없음 · 0원' },
+                { value: 'light', label: '주 1~2회 · 월 4만' },
+                { value: 'often', label: '주 3~5회 · 월 9만' },
+                { value: 'daily', label: '거의 매일 · 월 15만' },
+              ]}
+              value={coachProfile.snack}
+              onChange={value => setCoachProfile(prev => ({ ...prev, snack: value as BudgetCoachProfile['snack'], snackMonthly: 0 }))}
+              customActive={coachProfile.snackMonthly > 0}
+            >
+              <CoachMoneyOption label="직접 입력" value={coachProfile.snackMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, snackMonthly: value }))} />
+            </CoachQuestionCard>
+            <CoachQuestionCard
+              question="야식은 얼마나 먹어요?"
+              description="월 식비가 흔들리는 구간이라 별도로 봐요."
+              options={[
+                { value: 'none', label: '거의 없음 · 0원' },
+                { value: 'weekly', label: '주 1회 · 월 6만' },
+                { value: 'often', label: '주 2~3회 · 월 16만' },
+              ]}
+              value={coachProfile.lateNight}
+              onChange={value => setCoachProfile(prev => ({ ...prev, lateNight: value as BudgetCoachProfile['lateNight'], lateNightMonthly: 0 }))}
+              customActive={coachProfile.lateNightMonthly > 0}
+            >
+              <CoachMoneyOption label="직접 입력" value={coachProfile.lateNightMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, lateNightMonthly: value }))} />
+            </CoachQuestionCard>
           </View>
         )
       }
@@ -2355,9 +2831,10 @@ export default function App() {
       if (setupStep === 8) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>옷·물건 등 한 달에 평균 얼마 써요?</Text>
-            <Text style={styles.setupQuestionCopy}>고정 구독 빼고. 옷·신발·가방·잡화 등.</Text>
-            <MoneyInput label="쇼핑 월 평균" value={coachProfile.shoppingMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, shoppingMonthly: value }))} />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>친구·데이트 약속은 한 달에 어느 정도예요?</Text>
+            <Text style={styles.setupQuestionCopy}>한 달에 만나는 횟수와 한 번에 쓰는 내 몫 평균을 적어주세요.</Text>
+            <Field label="한 달 약속 횟수" value={coachProfile.socialFrequency ? `${coachProfile.socialFrequency}` : ''} onChange={value => setCoachProfile(prev => ({ ...prev, socialFrequency: Math.max(0, numeric(value)) }))} keyboardType="numeric" placeholder="회" />
+            <MoneyInput label="한 번 평균 금액" value={coachProfile.socialPerVisit} onChange={value => setCoachProfile(prev => ({ ...prev, socialPerVisit: value }))} />
           </View>
         )
       }
@@ -2365,9 +2842,8 @@ export default function App() {
       if (setupStep === 9) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>콘텐츠에 한 달 얼마 써요?</Text>
-            <Text style={styles.setupQuestionCopy}>고정 구독은 제외하고, 게임·영화·공연 같은 일회성 결제만.</Text>
-            <MoneyInput label="콘텐츠 월 평균" value={coachProfile.contentMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, contentMonthly: value }))} />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>옷, 물건, 미용 등에 한 달 평균 얼마 써요?</Text>
+            <MoneyInput label="월 평균" value={coachProfile.shoppingMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, shoppingMonthly: value }))} />
           </View>
         )
       }
@@ -2375,23 +2851,41 @@ export default function App() {
       if (setupStep === 10) {
         return (
           <View style={styles.setupSingleQuestion}>
-            <CoachQuestionCard
-              question="평소 돈 관리 스타일은?"
-              description="기타 예산 여유와 저축 기본 상태를 정해요."
-              options={[
-                { value: 'tight', label: '빡빡하게, 한 푼이라도 아끼는 편' },
-                { value: 'balanced', label: '적당히 균형' },
-                { value: 'loose', label: '넉넉하게 쓰는 편' },
-              ]}
-              value={coachProfile.moneyStyle}
-              onChange={value => {
-                const moneyStyle = value as BudgetCoachProfile['moneyStyle']
-                const nextProfile = { ...coachProfile, moneyStyle }
-                setCoachProfile(nextProfile)
-                const nextBreakdown = suggestSavingBreakdown(state, nextProfile, today)
-                patch({ savingEnabled: moneyStyle === 'tight', savingGoal: moneyStyle === 'tight' ? nextBreakdown.firstPeriod : 0 })
-              }}
-            />
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>앞 질문에 없는 월 지출이 있어요?</Text>
+            <Text style={styles.setupQuestionCopy}>구독, 취미, 생필품, 병원비처럼 아직 따로 묻지 않은 월 평균 지출이에요.</Text>
+            <MoneyInput label="기타 월 평균" value={coachProfile.contentMonthly} onChange={value => setCoachProfile(prev => ({ ...prev, contentMonthly: value }))} />
+          </View>
+        )
+      }
+
+      if (setupStep === 11) {
+        return (
+          <View style={styles.setupSingleQuestion}>
+            <View style={styles.coachQuestionCard}>
+              <Text style={styles.coachEyebrow}>예산 코치</Text>
+              <Text style={styles.coachQuestion}>평소 돈 관리 스타일은?</Text>
+              <Text style={styles.coachDescription}>기타 예산 여유와 저축 기본 상태를 정해요.</Text>
+              <View style={styles.coachOptionColumn}>
+                {([
+                  ['tight', '빡빡하게, 한 푼이라도 아끼는 편'],
+                  ['balanced', '적당히 균형'],
+                  ['loose', '넉넉하게 쓰는 편'],
+                ] as [BudgetCoachProfile['moneyStyle'], string][]).map(([moneyStyle, label]) => (
+                  <TouchableOpacity
+                    key={moneyStyle}
+                    style={[styles.coachOption, coachProfile.moneyStyle === moneyStyle && styles.coachOptionActive]}
+                    onPress={() => {
+                      const nextProfile = { ...coachProfile, moneyStyle }
+                      setCoachProfile(nextProfile)
+                      const nextBreakdown = suggestSavingBreakdown(state, nextProfile, today)
+                      patch({ savingEnabled: moneyStyle === 'tight', savingGoal: moneyStyle === 'tight' ? nextBreakdown.firstPeriod : 0 })
+                    }}
+                  >
+                    <Text style={[styles.coachOptionText, coachProfile.moneyStyle === moneyStyle && styles.coachOptionTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
           </View>
         )
       }
@@ -2400,8 +2894,8 @@ export default function App() {
         const breakdown = suggestSavingBreakdown(state, coachProfile, today)
         return (
           <View style={styles.setupSingleQuestion}>
-            <Text style={styles.setupQuestionTitle}>코치가 잡은 저축액</Text>
-            <Text style={styles.setupQuestionCopy}>지금까지 답한 내용으로 자동 계산했어요. 토글로 적용 여부만 정해주세요. 금액을 바꾸려면 코치를 다시 실행해요.</Text>
+            <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>AI가 보기엔 이만큼 저축할 수 있어요</Text>
+            <Text style={styles.setupQuestionCopy}>추천 금액은 참고값이에요. 부담되면 직접 줄여도 되고, 다음 입금 구간에서 다시 수정할 수 있어요.</Text>
             <View style={styles.suggestionCard}>
               <View style={styles.switchRow}>
                 <Text style={styles.suggestionTitle}>저축 적용</Text>
@@ -2418,12 +2912,31 @@ export default function App() {
               </View>
               {state.savingEnabled ? (
                 <View style={{ gap: 8 }}>
-                  <BreakdownRow label="이번 입금까지" value={money(breakdown.firstPeriod)} tone="plus" />
-                  <BreakdownRow label="다음 입금부터 매번" value={money(breakdown.perCycle)} tone="plus" />
+                  <View style={styles.savingHighlight}>
+                    <Text style={styles.savingHighlightLabel}>AI 추천 금액</Text>
+                    <Text style={styles.savingHighlightValue}>{money(breakdown.firstPeriod)}</Text>
+                  </View>
+                  <View style={styles.wideChoiceRow}>
+                    <TouchableOpacity
+                      style={[styles.wideChoiceButton, savingChoice === 'ai' && styles.wideChoiceActive]}
+                      onPress={() => { setSavingChoice('ai'); patch({ savingGoal: breakdown.firstPeriod }) }}
+                    >
+                      <Text style={[styles.chipText, savingChoice === 'ai' && styles.wideChoiceActiveText]}>AI 추천</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.wideChoiceButton, savingChoice === 'custom' && styles.wideChoiceActive]}
+                      onPress={() => setSavingChoice('custom')}
+                    >
+                      <Text style={[styles.chipText, savingChoice === 'custom' && styles.wideChoiceActiveText]}>직접 입력</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <MoneyInput label="이번 구간 최종 저축액" value={state.savingGoal} onChange={value => { setSavingChoice('custom'); patch({ savingGoal: value }) }} placeholder="원" />
+                  <Text style={styles.suggestionCopy}>{savingChoice === 'ai' ? 'AI 추천 금액이 최종 적용돼요.' : '직접 입력한 금액이 최종 적용돼요.'}</Text>
+                  <BreakdownRow label="다음 입금부터 저축 금액 추천" value={money(breakdown.perCycle)} tone="plus" />
                   <BreakdownRow label="월 환산" value={money(breakdown.monthly)} />
                   <Text style={styles.suggestionCopy}>
-                    이번 입금까지는 지금 통장 잔액에서 생활비를 빼고 남는 만큼 저축해요.{"\n"}
-                    다음 입금부터는 매 입금마다 같은 금액을 자동으로 떼둡니다.
+                    이대로 가는 걸 추천하지만, 지금 생활에 맞게 줄여도 괜찮아요.{"\n"}
+                    다음 구간에서 다시 수정할 수 있어요.
                   </Text>
                 </View>
               ) : (
@@ -2436,55 +2949,70 @@ export default function App() {
 
       return (
         <View style={styles.setupSingleQuestion}>
-          <Text style={styles.setupQuestionTitle}>이렇게 시작할게요</Text>
-          <Text style={styles.setupQuestionCopy}>입력한 값으로 이번 입금까지의 예산을 만들어요. 봉투는 바로 수정할 수 있어요.</Text>
+          <Text style={styles.setupQuestionTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>이렇게 시작할게요</Text>
+          <Text style={styles.setupQuestionCopy}>입력한 값으로 다음 입금 전까지의 예산을 만들어요. 아래 계산식과 봉투 금액은 바로 수정할 수 있어요.</Text>
           <View style={styles.suggestionCard}>
-            <BreakdownRow label="한 달 가용" value={money(monthlyBudgetPool)} tone="plus" />
-            <BreakdownRow label="이번 입금까지 예산 합" value={money(envelopeTotal)} tone="plus" />
-            {monthlyBudgets.기타 < 10000 && (
-              <Text style={styles.dangerText}>이 라이프엔 가용이 부족해요. 저축·데통 양보하거나 예산을 조정하세요.</Text>
-            )}
-            {monthlyBudgetTotal > monthlyBudgetPool && (
-              <Text style={styles.dangerText}>가용보다 {money(monthlyBudgetTotal - monthlyBudgetPool)} 초과. 다른 예산을 줄이거나 자동 차감을 조정하세요.</Text>
+            <Text style={styles.suggestionTitleStrong}>다음 입금 전까지 계산</Text>
+            <BreakdownRow label="시작 생활비" value={money(state.currentBalance)} />
+            <BreakdownRow label="빠질 고정비" value={fixedForPeriod > 0 ? `-${money(fixedForPeriod)}` : money(0)} tone={fixedForPeriod > 0 ? 'minus' : undefined} />
+            <BreakdownRow label="저축으로 뗄 돈" value={suggestedSaving > 0 ? `-${money(suggestedSaving)}` : money(0)} tone={suggestedSaving > 0 ? 'minus' : undefined} />
+            <View style={styles.breakdownDivider} />
+            <BreakdownRow label="실제로 쓸 수 있는 돈" value={money(spendableThisPeriod)} tone="plus" />
+            <TouchableOpacity style={styles.inlineInfoButton} onPress={() => setResultDetailsOpen(prev => !prev)}>
+              <Text style={styles.addText}>{resultDetailsOpen ? '계산 설명 닫기' : '계산 어떻게 나온 건지 보기'}</Text>
+            </TouchableOpacity>
+            {resultDetailsOpen && (
+              <View style={styles.breakdownBox}>
+                <Text style={styles.suggestionCopy}>시작 생활비 {money(state.currentBalance)}: 지금 생활비로 쓸 수 있다고 적은 돈이에요.</Text>
+                <Text style={styles.suggestionCopy}>빠질 고정비 {money(fixedForPeriod)}: 다음 입금 전까지 날짜가 걸린 고정지출이에요.</Text>
+                <Text style={styles.suggestionCopy}>저축 {money(suggestedSaving)}: 이번 구간에 먼저 떼둘 돈이에요.</Text>
+                <View style={styles.breakdownDivider} />
+                <BreakdownRow label="계산식" value={`${money(state.currentBalance)} - ${money(fixedForPeriod)} - ${money(suggestedSaving)}`} />
+                <BreakdownRow label="실제로 쓸 수 있는 돈" value={money(spendableThisPeriod)} tone="plus" />
+                <BreakdownRow label="이번 구간 일수" value={`${setupPeriodDays}일`} />
+                <Text style={styles.suggestionCopy}>이 남은 돈을 이번 주부터 먼저 나눠요. 오늘 많이 쓰면 이번 주 남은 날짜 예산이 먼저 줄어듭니다.</Text>
+              </View>
             )}
           </View>
           <View style={styles.suggestionCard}>
-            <BreakdownRow label="현재 잔액" value={money(state.currentBalance)} />
-            <BreakdownRow label="다음 보충 시점" value={deriveModeLabel(state)} />
-            <BreakdownRow label="이번 입금까지 고정지출" value={money(fixedTotal)} />
-            {state.savingEnabled ? (
-              <>
-                <BreakdownRow label="저축 (이번 입금까지)" value={money(savingBreakdown.firstPeriod)} tone="plus" />
-                <BreakdownRow label="저축 (다음부터 매 입금)" value={money(savingBreakdown.perCycle)} tone="plus" />
-                <BreakdownRow label="저축 (월 환산)" value={money(savingBreakdown.monthly)} />
-              </>
-            ) : (
-              <BreakdownRow label="저축" value="OFF" />
-            )}
-            <BreakdownRow label="데이트 통장" value={money(state.datePoolMonthly)} />
-            <BreakdownRow label="이벤트 적립" value={money(state.eventReserveMonthly)} />
+            <Text style={styles.suggestionTitleStrong}>예상 월 지출</Text>
+            <Text style={styles.suggestionCopy}>식비 상세 답변, 약속 횟수, 쇼핑/기타 입력값을 월 기준으로 합친 값이에요.</Text>
+            <BreakdownRow label="식비" value={money(monthlyBudgets.식비)} />
+            <BreakdownRow label="약속·문화" value={money(monthlyBudgets.문화)} />
+            <BreakdownRow label="쇼핑" value={money(monthlyBudgets.쇼핑)} />
+            <BreakdownRow label="생활·교통·기타" value={money(monthlyBudgets.생활 + monthlyBudgets.교통 + monthlyBudgets.기타)} />
             <View style={styles.breakdownDivider} />
-            <BreakdownRow label="6개 예산 합" value={money(envelopeTotal)} tone="plus" />
+            <BreakdownRow label="월 예상 합계" value={money(monthlyPlannedEnvelopeTotal)} tone="plus" />
+            {budgetIsTight && (
+              <Text style={styles.budgetWarningText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65}>예산이 빡빡해요. 저축액이나 봉투 금액을 조정해보세요.</Text>
+            )}
+          </View>
+          <View style={styles.suggestionCard}>
+            <Text style={styles.suggestionTitle}>이 정도면 할 만할 것 같아요?</Text>
+            <Text style={styles.suggestionCopy}>빡빡하면 저축액이나 각 봉투 금액을 바로 줄여보세요. 남는 돈이 생기면 예비비처럼 기타에 더해도 돼요.</Text>
+            <View style={styles.comfortButtonRow}>
+              {([
+                ['loose', '널널'],
+                ['balanced', '딱 좋음'],
+                ['tight', '빡빡함'],
+              ] as ['loose' | 'balanced' | 'tight', string][]).map(([level, label]) => (
+                <TouchableOpacity key={level} style={[styles.comfortButton, selectedComfort === level && styles.comfortButtonActive]} onPress={() => applyBudgetComfort(level)}>
+                  <Text style={[styles.coachOptionText, selectedComfort === level && styles.comfortButtonActiveText]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{label}</Text>
+                  <Text style={[styles.comfortBudgetText, selectedComfort === level && styles.comfortButtonActiveText]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{money(comfortBudgetTotal(level))}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
           {state.envelopes.map(envelope => (
             <View key={envelope.id} style={styles.setupEnvelopeRow}>
-              <View style={styles.setupEnvelopeNameField}>
+              <View style={styles.setupEnvelopeNameFixed}>
                 <Text style={styles.miniLabel}>예산</Text>
-                <TextInput
-                  style={styles.input}
-                  value={envelope.name}
-                  onChangeText={name => updateEnvelope(envelope.id, { name })}
-                  placeholder="식비"
-                  placeholderTextColor={colors.subtle}
-                  selectTextOnFocus
-                  autoCorrect={false}
-                  spellCheck={false}
-                />
+                <Text style={styles.envelopeFixedName}>{envelope.name}</Text>
               </View>
               <View style={styles.setupEnvelopeMoneyField}>
-                <Text style={styles.miniLabel}>이번 입금까지</Text>
+                <Text style={styles.miniLabel}>다음 입금 전까지</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, styles.moneyInputRight]}
                   value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
                   keyboardType="numeric"
                   onChangeText={amount => updateSetupEnvelopeLimit(envelope.id, numeric(amount))}
@@ -2492,7 +3020,10 @@ export default function App() {
                   placeholderTextColor={colors.subtle}
                 />
               </View>
-              <Text style={styles.emptyText}>월 환산 {money(monthlyBudgets[envelope.name])}</Text>
+              <View style={styles.monthlyEquivalentBox}>
+                <Text style={styles.miniLabel}>월 환산</Text>
+                <Text style={styles.monthlyEquivalentText}>{money(monthlyBudgets[envelope.name])}</Text>
+              </View>
             </View>
           ))}
         </View>
@@ -2508,12 +3039,6 @@ export default function App() {
         contentContainerStyle={[styles.setupContent, keyboardVisible && styles.setupContentKeyboard]}
       >
         <View style={styles.setupMain}>
-          <View style={styles.setupIntro}>
-            <Text style={styles.setupIntroTitle}>처음엔 몇 가지만 물어볼게요</Text>
-            <Text style={styles.setupIntroCopy}>
-              수입일, 고정 지출, 평소 소비 리듬을 바탕으로{"\n"}오늘 얼마까지 써도 되는지 계산해드릴게요.
-            </Text>
-          </View>
           <View style={styles.setupQuestionShell}>
             <View style={styles.setupProgressRow}>
               <Text style={styles.setupProgress}>{Math.min(setupStep + 1, totalSetupSteps)} / {totalSetupSteps}</Text>
@@ -2536,22 +3061,17 @@ export default function App() {
               </TouchableOpacity>
             ) : <View style={styles.setupNavButton} />}
             {setupStep === resultStep && (
-              <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={() => jumpToSetupStep(6)}>
+              <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={() => jumpToSetupStep(7)}>
                 <Text style={styles.secondaryButtonText}>코치 다시풀기</Text>
               </TouchableOpacity>
             )}
             {setupStep < resultStep ? (
               <View style={[styles.setupNavButton, styles.setupNavSplit]}>
-                {setupStep >= 3 && setupStep <= savingStep && (
-                  <TouchableOpacity style={[styles.secondaryButton, styles.setupNavButton]} onPress={advanceSetup}>
-                    <Text style={styles.secondaryButtonText}>건너뛰기</Text>
-                  </TouchableOpacity>
-                )}
                 <TouchableOpacity
-                  style={[styles.setupPrimaryButton, styles.setupNavButton, setupStep === 0 && state.currentBalance <= 0 && styles.primaryButtonMuted]}
+                  style={[styles.setupPrimaryButton, styles.setupNavButton, setupStep === 1 && state.currentBalance <= 0 && styles.primaryButtonMuted]}
                   onPress={goNext}
                 >
-                  <Text style={[styles.setupPrimaryButtonText, setupStep === 0 && state.currentBalance <= 0 && styles.primaryButtonMutedText]}>다음</Text>
+                  <Text style={[styles.setupPrimaryButtonText, setupStep === 1 && state.currentBalance <= 0 && styles.primaryButtonMutedText]}>다음</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -2713,49 +3233,142 @@ export default function App() {
   }
 
   function renderCalendar() {
-    const totalDays = daysInMonth(calendarMonth)
     const calendarPlan = plan
-    const slots = Array.from({ length: 42 }, (_, index) => {
-      const day = index - startOffset(calendarMonth) + 1
-      return day >= 1 && day <= totalDays ? day : null
+    const monthLabel = calendarMonth.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' })
+
+    function animateCalendarTo(offset: number) {
+      hapticLight()
+      const width = calendarPagerWidthRef.current
+      if (!width || reduceMotion) {
+        setCalendarMonth(prev => addMonths(prev, offset))
+        return
+      }
+      const pageStep = width + CALENDAR_PAGE_GAP
+      const target = offset > 0 ? -pageStep * 2 : 0
+      Animated.timing(calendarPagerX, {
+        toValue: target,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start(() => {
+        calendarPagerResetPendingRef.current = true
+        setCalendarMonth(prev => addMonths(prev, offset))
+      })
+    }
+
+    function settleCalendar() {
+      const width = calendarPagerWidthRef.current
+      if (!width) return
+      Animated.spring(calendarPagerX, {
+        toValue: -(width + CALENDAR_PAGE_GAP),
+        useNativeDriver: false,
+        friction: 8,
+        tension: 90,
+      }).start()
+    }
+
+    const calendarPanResponder = PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onPanResponderGrant: () => calendarPagerX.stopAnimation(),
+      onPanResponderMove: (_, gesture) => {
+        const width = calendarPagerWidthRef.current
+        if (!width) return
+        const drag = Math.max(-width, Math.min(width, gesture.dx))
+        calendarPagerX.setValue(-(width + CALENDAR_PAGE_GAP) + drag)
+      },
+      onPanResponderRelease: (_, gesture) => {
+        const width = calendarPagerWidthRef.current
+        if (!width) return
+        const threshold = Math.min(90, width * 0.22)
+        if (gesture.dx < -threshold) animateCalendarTo(1)
+        else if (gesture.dx > threshold) animateCalendarTo(-1)
+        else settleCalendar()
+      },
+      onPanResponderTerminate: settleCalendar,
     })
+
+    function changeMonth(offset: number) {
+      animateCalendarTo(offset)
+    }
+
+    function renderCalendarMonthPage(monthDate: Date, pageKey: string) {
+      const pageTotalDays = daysInMonth(monthDate)
+      const pageSlots = Array.from({ length: 42 }, (_, index) => {
+        const day = index - startOffset(monthDate) + 1
+        return day >= 1 && day <= pageTotalDays ? day : null
+      })
+      const pageMonthLabel = monthDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' })
+      return (
+        <View key={pageKey} style={[styles.calendarPagerPage, { width: calendarPagerWidth || 1 }]}>
+          <View style={styles.calendarGrid}>
+            {pageSlots.map((day, index) => {
+              if (!day) return <View key={`blank-${pageKey}-${index}`} style={styles.dayCellBlank} />
+              const dateKey = dateForDay(monthDate, day)
+              const date = new Date(monthDate.getFullYear(), monthDate.getMonth(), day)
+              const total = sumForDate(state, dateKey)
+              const fixedDue = state.fixedItems.filter(item => item.day === day && item.amount > 0)
+              const allowance = allowanceForCalendarDate(state, date, calendarPlan, today)
+              const tone = dayTone(state, dateKey, total, allowance, today)
+              const isToday = dateKey === todayKey
+              const isPast = dateKey < todayKey
+              const hasNoSpend = isNoSpendDate(state, dateKey)
+              const calendarValue = total > 0 ? calendarMoney(total) : isPast && !hasNoSpend ? '-' : allowance <= 0 ? '-' : calendarMoney(allowance)
+              return (
+                <TouchableOpacity
+                  key={`${pageKey}-${day}`}
+                  style={[styles.dayCell, tone === 'over' && styles.dayOver, tone === 'under' && styles.dayUnder]}
+                  onPress={() => setSelectedDate(dateKey)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${pageMonthLabel} ${day}일${isToday ? ', 오늘' : ''}${total > 0 ? `, 지출 ${money(total)}` : ''}${tone === 'over' ? ', 한도 초과' : ''}${hasNoSpend ? ', 무지출 체크' : ''}`}
+                >
+                  <View style={[styles.dayNumberBadge, isToday && styles.dayNumberBadgeToday]}>
+                    <Text style={[styles.dayNumber, isToday && styles.dayNumberToday]}>{day}</Text>
+                  </View>
+                  <View style={styles.dayMoneyRow}>
+                    {tone === 'over' && <Text style={[styles.dayToneGlyph, styles.overText]}>▲</Text>}
+                    {tone === 'under' && total > 0 && <Text style={[styles.dayToneGlyph, styles.underText]}>▼</Text>}
+                    <Text style={[styles.dayMoney, total > 0 ? styles.daySpentMoney : styles.dayBudgetMoney, tone === 'over' && styles.overText, tone === 'under' && styles.underText]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.9}>
+                      {calendarValue}
+                    </Text>
+                  </View>
+                  {fixedDue.length > 0 && (
+                    <View style={styles.fixedBadge}>
+                      <Text style={styles.fixedBadgeText} numberOfLines={1}>{shortFixedLabel(fixedDue[0].name)}</Text>
+                      {fixedDue.length > 1 && <Text style={styles.fixedBadgeCount}>+{fixedDue.length - 1}</Text>}
+                    </View>
+                  )}
+                </TouchableOpacity>
+              )
+            })}
+          </View>
+        </View>
+      )
+    }
 
     return (
       <View style={styles.calendarScreen}>
         <View style={styles.calendarHeader}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.eyebrow}>월간 캘린더</Text>
-            <Text style={styles.title}>{calendarMonth.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' })}</Text>
-          </View>
-          <View style={styles.monthControls}>
-            <TouchableOpacity
-              style={styles.monthButton}
-              onPress={() => setCalendarMonth(prev => addMonths(prev, -1))}
-              accessibilityRole="button"
-              accessibilityLabel="이전 달"
-            >
+          <Text style={styles.eyebrow}>월간 캘린더</Text>
+          <View style={styles.monthTitleRow}>
+            <TouchableOpacity style={styles.monthButton} onPress={() => changeMonth(-1)} accessibilityRole="button" accessibilityLabel="이전 달">
               <IconChevronLeft size={22} color={colors.text} strokeWidth={2.5} />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.todayButton}
-              onPress={() => setCalendarMonth(startOfMonth(today))}
-              accessibilityRole="button"
-              accessibilityLabel="이번 달로 이동"
-            >
-              <Text style={styles.todayButtonText}>오늘</Text>
+            <TouchableOpacity style={styles.monthTitleButton} onPress={() => setCalendarPicker('year')} accessibilityRole="button" accessibilityLabel="년도 선택">
+              <Text style={styles.monthTitleText}>{calendarMonth.getFullYear()}년</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.monthButton}
-              onPress={() => setCalendarMonth(prev => addMonths(prev, 1))}
-              accessibilityRole="button"
-              accessibilityLabel="다음 달"
-            >
+            <TouchableOpacity style={styles.monthTitleButton} onPress={() => setCalendarPicker('month')} accessibilityRole="button" accessibilityLabel="월 선택">
+              <Text style={styles.monthTitleText}>{calendarMonth.getMonth() + 1}월</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.monthButton} onPress={() => changeMonth(1)} accessibilityRole="button" accessibilityLabel="다음 달">
               <IconChevronRight size={22} color={colors.text} strokeWidth={2.5} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.todayButton} onPress={() => setCalendarMonth(startOfMonth(today))} accessibilityRole="button" accessibilityLabel="이번 달로 이동">
+              <Text style={styles.todayButtonText}>오늘</Text>
             </TouchableOpacity>
           </View>
         </View>
         <View style={styles.legendRow}>
-          <View style={styles.legendItem}><View style={[styles.legendDot, styles.legendUnder]} /><Text style={styles.legendText}>적게 씀</Text></View>
+          <View style={styles.legendItem}><View style={[styles.legendDot, styles.legendUnder]} /><Text style={styles.legendText}>예산 이하</Text></View>
           <View style={styles.legendItem}><View style={[styles.legendDot, styles.legendOver]} /><Text style={styles.legendText}>초과</Text></View>
           <View style={styles.legendItem}><View style={styles.legendToday} /><Text style={styles.legendText}>오늘</Text></View>
           <View style={styles.legendItem}><View style={styles.legendFixed} /><Text style={styles.legendText}>고정</Text></View>
@@ -2763,70 +3376,22 @@ export default function App() {
         <View style={styles.weekRow}>
           {WEEKDAYS.map(day => <Text key={day} style={styles.weekLabel}>{day}</Text>)}
         </View>
-        <View style={styles.calendarGrid}>
-          {slots.map((day, index) => {
-            if (!day) {
-              return <View key={`blank-${index}`} style={styles.dayCellBlank} />
-            }
-            const dateKey = dateForDay(calendarMonth, day)
-            const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day)
-            const total = sumForDate(state, dateKey)
-            const fixedDue = state.fixedItems.filter(item => item.day === day && item.amount > 0)
-            const allowance = allowanceForDate(date, calendarPlan, state.lifestyleType, today)
-            const tone = dayTone(state, dateKey, total, allowance)
-            const isToday = dateKey === todayKey
-            const isPast = dateKey < todayKey
-            const hasNoSpend = isNoSpendDate(state, dateKey)
-            const calendarValue = total > 0
-              ? calendarMoney(total)
-              : isPast && !hasNoSpend
-                ? '-'
-                : allowance <= 0
-                  ? '-'
-                  : calendarMoney(allowance)
-            return (
-              <TouchableOpacity
-                key={day}
-                style={[
-                  styles.dayCell,
-                  tone === 'over' && styles.dayOver,
-                  tone === 'under' && styles.dayUnder,
-                ]}
-                onPress={() => setSelectedDate(dateKey)}
-                accessibilityRole="button"
-                accessibilityLabel={`${day}일${isToday ? ', 오늘' : ''}${total > 0 ? `, 지출 ${money(total)}` : ''}${tone === 'over' ? ', 한도 초과' : ''}${hasNoSpend ? ', 무지출 체크' : ''}`}
-              >
-                <View style={[styles.dayNumberBadge, isToday && styles.dayNumberBadgeToday]}>
-                  <Text style={[styles.dayNumber, isToday && styles.dayNumberToday]}>{day}</Text>
-                </View>
-                <View style={styles.dayMoneyRow}>
-                  {tone === 'over' && <Text style={[styles.dayToneGlyph, styles.overText]}>▲</Text>}
-                  {tone === 'under' && total > 0 && <Text style={[styles.dayToneGlyph, styles.underText]}>▼</Text>}
-                  <Text
-                    style={[
-                      styles.dayMoney,
-                      total > 0 ? styles.daySpentMoney : styles.dayBudgetMoney,
-                      tone === 'over' && styles.overText,
-                      tone === 'under' && styles.underText,
-                    ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.9}
-                  >
-                    {calendarValue}
-                  </Text>
-                </View>
-                {fixedDue.length > 0 && (
-                  <View style={styles.fixedBadge}>
-                    <Text style={styles.fixedBadgeText} numberOfLines={1}>{shortFixedLabel(fixedDue[0].name)}</Text>
-                    {fixedDue.length > 1 && (
-                      <Text style={styles.fixedBadgeCount}>+{fixedDue.length - 1}</Text>
-                    )}
-                  </View>
-                )}
-              </TouchableOpacity>
-            )
-          })}
+        <View
+          style={styles.calendarPagerViewport}
+          onLayout={event => {
+            const width = event.nativeEvent.layout.width
+            if (!width || width === calendarPagerWidthRef.current) return
+            calendarPagerWidthRef.current = width
+            setCalendarPagerWidth(width)
+            calendarPagerX.setValue(-(width + CALENDAR_PAGE_GAP))
+          }}
+          {...calendarPanResponder.panHandlers}
+        >
+          <Animated.View style={[styles.calendarPagerTrack, { transform: [{ translateX: calendarPagerX }] }]}>
+            {renderCalendarMonthPage(addMonths(calendarMonth, -1), 'previous')}
+            {renderCalendarMonthPage(calendarMonth, 'current')}
+            {renderCalendarMonthPage(addMonths(calendarMonth, 1), 'next')}
+          </Animated.View>
         </View>
       </View>
     )
@@ -2841,7 +3406,7 @@ export default function App() {
           <Text style={styles.title}>예산</Text>
         </View>
         <View style={styles.section}>
-          <Text style={styles.eyebrow}>이번 입금까지</Text>
+          <Text style={styles.eyebrow}>다음 입금 전까지</Text>
           <BreakdownRow label="총 예산" value={money(totalLimit)} tone="plus" />
           <Text style={styles.emptyText}>입금 중엔 잠겨요. 옮기기로 조정하세요.</Text>
         </View>
@@ -2849,7 +3414,7 @@ export default function App() {
           <Text style={styles.primaryButtonText}>예산끼리 금액 옮기기</Text>
         </TouchableOpacity>
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>이번 입금까지 예산</Text>
+          <Text style={styles.sectionTitle}>다음 입금 전까지 예산</Text>
           {envelopeStatuses.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyText}>예산이 아직 없습니다.</Text>
@@ -2908,40 +3473,34 @@ export default function App() {
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>생활비 기준</Text>
               <MoneyInput label="지금 당장 생활비로 써도 되는 돈" value={state.currentBalance} onChange={value => patch({ currentBalance: value })} />
-              <View style={styles.suggestionCard}>
-                <View style={styles.switchRow}>
-                  <Text style={styles.suggestionTitle}>저축 자동 적용</Text>
-                  <Switch
-                    value={state.savingEnabled}
-                    onValueChange={enabled => {
-                      const nextSavingGoal = enabled
-                        ? (state.periods.length === 0 ? settingsBreakdown.firstPeriod : settingsBreakdown.perCycle)
-                        : 0
-                      const nextStateForEnvelopes = { ...state, savingEnabled: enabled, savingGoal: nextSavingGoal }
-                      const nextEnvelopes = suggestEnvelopeBudgets(nextStateForEnvelopes, coachProfile, today)
-                      patch({
-                        savingEnabled: enabled,
-                        savingGoal: nextSavingGoal,
-                        envelopes: nextEnvelopes,
-                        currentPeriodPlan: nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
-                      })
-                    }}
-                    trackColor={{ false: colors.borderMd, true: colors.teal }}
-                    thumbColor={colors.surface}
-                    ios_backgroundColor={colors.borderMd}
-                  />
-                </View>
-                {state.savingEnabled ? (
-                  <View style={{ gap: 8 }}>
-                    <BreakdownRow label="이번 입금까지" value={money(settingsBreakdown.firstPeriod)} tone="plus" />
-                    <BreakdownRow label="다음 입금부터 매번" value={money(settingsBreakdown.perCycle)} tone="plus" />
-                    <BreakdownRow label="월 환산" value={money(settingsBreakdown.monthly)} />
-                    <Text style={styles.suggestionCopy}>코치 답변을 바탕으로 자동 계산해요. 금액을 바꾸려면 "온보딩 다시 시작"을 눌러 답을 새로 해주세요.</Text>
-                  </View>
-                ) : (
-                  <Text style={styles.suggestionCopy}>저축 OFF — 모든 금액이 일일 예산으로 굴러갑니다.</Text>
-                )}
+              <View style={styles.settingsSwitchRow}>
+                <Text style={styles.sectionTitle}>저축 자동 적용</Text>
+                <Switch
+                  value={state.savingEnabled}
+                  onValueChange={enabled => {
+                    const nextSavingGoal = enabled
+                      ? (state.periods.length === 0 ? settingsBreakdown.firstPeriod : settingsBreakdown.perCycle)
+                      : 0
+                    const nextStateForEnvelopes = { ...state, savingEnabled: enabled, savingGoal: nextSavingGoal }
+                    const nextEnvelopes = suggestEnvelopeBudgets(nextStateForEnvelopes, coachProfile, today)
+                    patch({
+                      savingEnabled: enabled,
+                      savingGoal: nextSavingGoal,
+                      envelopes: nextEnvelopes,
+                      currentPeriodPlan: nextEnvelopes.map(envelope => ({ category: envelope.name, limit: envelope.periodLimit })),
+                    })
+                  }}
+                  trackColor={{ false: colors.borderMd, true: colors.teal }}
+                  thumbColor={colors.surface}
+                  ios_backgroundColor={colors.borderMd}
+                />
               </View>
+              {state.savingEnabled && (
+                <View style={{ gap: 8 }}>
+                  <MoneyInput label="현재 구간 저축 목표 직접 수정" value={state.savingGoal} onChange={rebalanceEnvelopesForSavingGoal} />
+                  <Text style={styles.suggestionCopy}>수정한 차액은 현재 예산 비율대로 자동 재분배돼요.</Text>
+                </View>
+              )}
               <LifestylePicker value={state.lifestyleType} onChange={value => patch({ lifestyleType: value })} />
             </View>
           )
@@ -2970,12 +3529,19 @@ export default function App() {
                   autoCorrect={false}
                   spellCheck={false}
                 />
+                {item.cadence === 'monthly' ? (
+                  <DayInput value={incomeDay(item)} onChange={day => updateIncome(item.id, incomeWithDay(item, day || 1, today))} />
+                ) : (
+                  <TouchableOpacity style={styles.dateMiniButton} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })}>
+                    <Text style={styles.dateMiniButtonText}>{item.anchorDate.slice(5)}</Text>
+                  </TouchableOpacity>
+                )}
                 <TextInput
                   style={[styles.input, styles.moneySmall]}
                   value={item.amount ? item.amount.toLocaleString('ko-KR') : ''}
                   keyboardType="numeric"
                   onChangeText={amount => updateIncome(item.id, { amount: amount.trim() ? numeric(amount) : null })}
-                  placeholder="미정"
+                  placeholder="원"
                   placeholderTextColor={colors.subtle}
                 />
                 <TouchableOpacity
@@ -2985,28 +3551,16 @@ export default function App() {
                   accessibilityLabel={`${item.name || '수입'} 삭제`}
                 ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
               </View>
-              <View style={styles.incomeTimingRow}>
-                <View style={styles.incomeCadenceChips}>
-                  {CADENCE_OPTIONS.map(option => (
-                    <TouchableOpacity
-                      key={option.key}
-                      style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
-                      onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
-                    >
-                      <Text style={[styles.chipText, styles.cadenceChipText, item.cadence === option.key && styles.chipTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{option.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                {item.cadence === 'monthly' ? (
-                  <View style={styles.inlineDayField}>
-                    <Text style={styles.miniLabel}>매달 며칠?</Text>
-                    <DayInput value={incomeDay(item)} onChange={day => updateIncome(item.id, incomeWithDay(item, day, today))} />
-                  </View>
-                ) : (
-                  <View style={{ flex: 1 }}>
-                    <DateField label="기준 날짜" value={item.anchorDate} onPress={() => setDatePickerTarget({ kind: 'income', id: item.id })} />
-                  </View>
-                )}
+              <View style={styles.incomeCadenceChips}>
+                {CADENCE_OPTIONS.map(option => (
+                  <TouchableOpacity
+                    key={option.key}
+                    style={[styles.incomeCadenceChip, item.cadence === option.key && styles.chipActive]}
+                    onPress={() => updateIncome(item.id, incomeWithCadence(item, option.key))}
+                  >
+                    <Text style={[styles.chipText, styles.cadenceChipText, item.cadence === option.key && styles.chipTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{option.label}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
               {item.cadence === 'irregular' && (
                 <Field
@@ -3023,18 +3577,18 @@ export default function App() {
               <View style={styles.chipGrid}>
                 <View style={styles.chipSlot}>
                   <TouchableOpacity
-                    style={[styles.chip, state.noIncomeMode === 'targetDate' && styles.chipActive]}
+                    style={[styles.chip, state.noIncomeMode === 'targetDate' && styles.wideChoiceActive]}
                     onPress={() => patch({ noIncomeMode: 'targetDate', targetDate: state.targetDate ?? isoDate(addDays(today, 30)) })}
                   >
-                    <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.chipTextActive]}>특정 날짜까지</Text>
+                    <Text style={[styles.chipText, state.noIncomeMode === 'targetDate' && styles.wideChoiceActiveText]}>특정 날짜까지</Text>
                   </TouchableOpacity>
                 </View>
                 <View style={styles.chipSlot}>
                   <TouchableOpacity
-                    style={[styles.chip, state.noIncomeMode === 'openEnded' && styles.chipActive]}
+                    style={[styles.chip, state.noIncomeMode === 'openEnded' && styles.wideChoiceActive]}
                     onPress={() => patch({ noIncomeMode: 'openEnded' })}
                   >
-                    <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.chipTextActive]}>정해진 날 없음</Text>
+                    <Text style={[styles.chipText, state.noIncomeMode === 'openEnded' && styles.wideChoiceActiveText]}>정해진 날 없음</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -3056,25 +3610,27 @@ export default function App() {
             </View>
           )}
           {state.fixedItems.map(item => (
-            <View key={item.id} style={styles.editRow}>
-              <TextInput
-                style={[styles.input, { flex: 1 }]}
-                value={item.name}
-                onChangeText={name => updateFixed(item.id, { name })}
-                placeholder="지출 이름"
-                placeholderTextColor={colors.subtle}
-                selectTextOnFocus
-                autoCorrect={false}
-                spellCheck={false}
-              />
-              <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} />
-              <TextInput style={[styles.input, styles.moneySmall]} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} />
-              <TouchableOpacity
-                style={styles.deleteButton}
-                onPress={() => confirmDestructive('고정 지출 삭제', `${item.name || '이 항목'}을(를) 삭제할까요?`, () => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) }))}
-                accessibilityRole="button"
-                accessibilityLabel={`${item.name || '고정 지출'} 삭제`}
-              ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+            <View key={item.id} style={styles.incomeSetupCard}>
+              <View style={styles.editRow}>
+                <TextInput
+                  style={[styles.input, { flex: 1 }]}
+                  value={item.name}
+                  onChangeText={name => updateFixed(item.id, { name })}
+                  placeholder="이름"
+                  placeholderTextColor={colors.subtle}
+                  selectTextOnFocus
+                  autoCorrect={false}
+                  spellCheck={false}
+                />
+                <DayInput value={item.day} onChange={day => updateFixed(item.id, { day })} placeholder="날짜" />
+                <TextInput style={[styles.input, styles.moneySmall]} value={item.amount ? item.amount.toLocaleString('ko-KR') : ''} keyboardType="numeric" onChangeText={amount => updateFixed(item.id, { amount: numeric(amount) })} placeholder="원" placeholderTextColor={colors.subtle} />
+                <TouchableOpacity
+                  style={styles.deleteButton}
+                  onPress={() => confirmDestructive('고정 지출 삭제', `${item.name || '이 항목'}을(를) 삭제할까요?`, () => patch({ fixedItems: state.fixedItems.filter(row => row.id !== item.id) }))}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.name || '고정 지출'} 삭제`}
+                ><Text style={styles.removeText}>삭제</Text></TouchableOpacity>
+              </View>
             </View>
           ))}
         </View>
@@ -3123,6 +3679,8 @@ export default function App() {
     ? state.fixedItems.filter(item => item.day === Number(selectedDate.slice(8, 10)) && item.amount > 0)
     : []
   const modalNoSpend = selectedDate ? isNoSpendDate(state, selectedDate) : false
+  const modalAllowance = selectedDate ? allowanceForCalendarDate(state, parseIso(selectedDate), plan, today) : 0
+  const modalDelta = modalAllowance - modalTotal
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -3204,6 +3762,17 @@ export default function App() {
                   <IconClose size={22} color={colors.muted} strokeWidth={2} />
                 </TouchableOpacity>
               </View>
+              {selectedDate && (
+                <View style={styles.dateBudgetCard}>
+                  <BreakdownRow label="이 날짜 기준 예산" value={money(modalAllowance)} tone="plus" />
+                  <BreakdownRow label="쓴 돈" value={`-${money(modalTotal)}`} tone="minus" />
+                  <BreakdownRow
+                    label={modalDelta >= 0 ? '예산보다 덜 씀' : '예산 초과'}
+                    value={money(Math.abs(modalDelta))}
+                    tone={modalDelta >= 0 ? 'plus' : 'minus'}
+                  />
+                </View>
+              )}
               {modalFixedItems.length > 0 && (
                 <View style={styles.fixedList}>
                   <Text style={styles.fixedListTitle}>예정된 고정 지출</Text>
@@ -3234,9 +3803,6 @@ export default function App() {
                     onChangeText={text => setModalAmount(formatMoneyText(text))}
                     placeholder="0"
                     keyboardType="numeric"
-                    returnKeyType="next"
-                    onSubmitEditing={() => modalMemoRef.current?.focus()}
-                    blurOnSubmit={false}
                     autoCorrect={false}
                     spellCheck={false}
                     placeholderTextColor={colors.subtle}
@@ -3359,10 +3925,7 @@ export default function App() {
             <KeyboardAvoidingView style={styles.modalSheet} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0} pointerEvents="box-none">
               <ScrollView style={styles.modalCard} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
                 <View style={styles.modalTop}>
-                  <View>
-                    <Text style={styles.eyebrow}>예산 이동</Text>
-                    <Text style={styles.modalTitle}>예산 간 옮기기</Text>
-                  </View>
+                  <Text style={styles.modalTitle}>예산 간 옮기기</Text>
                   <TouchableOpacity
                     onPress={closeTransferModal}
                     style={styles.modalCloseButton}
@@ -3372,32 +3935,143 @@ export default function App() {
                     <IconClose size={22} color={colors.muted} strokeWidth={2} />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.label}>보낼 예산</Text>
-                <View style={styles.chipGrid}>
-                  {CATEGORIES.map(category => (
-                    <View key={category} style={styles.chipSlot}>
-                      <TouchableOpacity style={[styles.chip, transferFrom === category && styles.chipActive]} onPress={() => setTransferFrom(category)}>
-                        <Text style={[styles.chipText, transferFrom === category && styles.chipTextActive]}>{category}</Text>
+                {(() => {
+                  const fromRemaining = envelopeStatuses.find(envelope => envelope.name === transferFrom)?.remaining ?? 0
+                  const toRemaining = envelopeStatuses.find(envelope => envelope.name === transferTo)?.remaining ?? 0
+                  const sameCategory = transferFrom === transferTo
+                  const actualAmount = Math.max(0, Math.min(transferAmount, fromRemaining))
+                  const previewFrom = fromRemaining - actualAmount
+                  const previewTo = toRemaining + actualAmount
+                  const ctaDisabled = sameCategory || actualAmount <= 0
+                  const helperReason = sameCategory
+                    ? '같은 봉투끼리는 옮길 수 없어요.'
+                    : fromRemaining <= 0
+                      ? `${transferFrom} 예산이 0원이라 옮길 수 없어요.`
+                      : null
+                  const FromIcon = CATEGORY_ICONS[transferFrom]
+                  const ToIcon = CATEGORY_ICONS[transferTo]
+                  return (
+                    <>
+                      <View style={styles.transferPairRow}>
+                        <TouchableOpacity style={[styles.transferPairCard, styles.transferPairCardOut]} onPress={() => { Keyboard.dismiss(); setTransferPickerSide('from') }} activeOpacity={0.82}>
+                          <Text style={styles.transferPairLabel}>보낼 봉투</Text>
+                          <View style={styles.transferPairHeaderRow}>
+                            <View style={[styles.transferPairIcon, styles.transferPairIconOut]}>
+                              <FromIcon size={18} color={colors.danger} strokeWidth={2.2} />
+                            </View>
+                            <Text style={styles.transferPairName} numberOfLines={1}>{transferFrom}</Text>
+                          </View>
+                          <Text style={[styles.transferPairNowSmall, styles.transferPairNowSmallOut]}>지금 {money(fromRemaining)}</Text>
+                          <Text style={[styles.transferPairNextBig, styles.transferPreviewNextOut]} numberOfLines={1}>→ {money(previewFrom)}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.transferSwapButton}
+                          onPress={swapTransferSides}
+                          activeOpacity={0.7}
+                          accessibilityRole="button"
+                          accessibilityLabel="보낼·받을 바꾸기"
+                        >
+                          <IconSwap size={20} color={colors.tealDark} strokeWidth={2.4} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.transferPairCard, styles.transferPairCardIn]} onPress={() => { Keyboard.dismiss(); setTransferPickerSide('to') }} activeOpacity={0.82}>
+                          <Text style={styles.transferPairLabel}>받을 봉투</Text>
+                          <View style={styles.transferPairHeaderRow}>
+                            <View style={[styles.transferPairIcon, styles.transferPairIconIn]}>
+                              <ToIcon size={18} color={colors.tealDark} strokeWidth={2.2} />
+                            </View>
+                            <Text style={styles.transferPairName} numberOfLines={1}>{transferTo}</Text>
+                          </View>
+                          <Text style={[styles.transferPairNowSmall, styles.transferPairNowSmallIn]}>지금 {money(toRemaining)}</Text>
+                          <Text style={[styles.transferPairNextBig, styles.transferPreviewNextIn]} numberOfLines={1}>→ {money(previewTo)}</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      <View style={styles.transferAmountBlock}>
+                        <Text style={styles.transferAmountLabel}>옮길 금액</Text>
+                        <View style={styles.transferAmountInputRow}>
+                          <View style={styles.transferAmountInputUnderline}>
+                            <TextInput
+                              style={styles.transferAmountInput}
+                              value={transferAmount ? transferAmount.toLocaleString('ko-KR') : ''}
+                              onChangeText={text => setTransferAmount(Math.min(fromRemaining, numeric(text)))}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              placeholderTextColor={colors.subtle}
+                              selectionColor={colors.teal}
+                            />
+                          </View>
+                          <Text style={styles.transferAmountUnit}>원</Text>
+                        </View>
+                      </View>
+
+                      {helperReason && (
+                        <Text style={styles.transferCtaHelper}>{helperReason}</Text>
+                      )}
+                      <TouchableOpacity
+                        style={[styles.primaryButton, ctaDisabled && styles.primaryButtonMuted]}
+                        onPress={submitEnvelopeTransfer}
+                        disabled={ctaDisabled}
+                      >
+                        <Text style={[styles.primaryButtonText, ctaDisabled && styles.primaryButtonMutedText]}>
+                          {actualAmount > 0 && !sameCategory
+                            ? `${withRo(transferTo)} ${money(actualAmount)} 옮기기`
+                            : '옮기기'}
+                        </Text>
                       </TouchableOpacity>
-                    </View>
-                  ))}
-                </View>
-                <Text style={styles.label}>받을 예산</Text>
-                <View style={styles.chipGrid}>
-                  {CATEGORIES.map(category => (
-                    <View key={category} style={styles.chipSlot}>
-                      <TouchableOpacity style={[styles.chip, transferTo === category && styles.chipActive]} onPress={() => setTransferTo(category)}>
-                        <Text style={[styles.chipText, transferTo === category && styles.chipTextActive]}>{category}</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                </View>
-                <MoneyInput label="옮길 금액" value={transferAmount} onChange={setTransferAmount} />
-                <TouchableOpacity style={[styles.primaryButton, (!transferAmount || transferFrom === transferTo) && styles.primaryButtonMuted]} onPress={submitEnvelopeTransfer}>
-                  <Text style={styles.primaryButtonText}>옮기기</Text>
-                </TouchableOpacity>
+                    </>
+                  )
+                })()}
               </ScrollView>
             </KeyboardAvoidingView>
+            {transferPickerSide && (
+              <>
+                <TouchableOpacity
+                  style={styles.transferPickerBackdrop}
+                  activeOpacity={1}
+                  onPress={() => setTransferPickerSide(null)}
+                />
+                <View style={styles.transferPickerSheet}>
+                  <Text style={styles.modalTitle}>
+                    {transferPickerSide === 'from' ? '보낼 봉투 선택' : '받을 봉투 선택'}
+                  </Text>
+                  <View style={styles.transferPickerList}>
+                    {CATEGORIES.map(category => {
+                      const remaining = envelopeStatuses.find(envelope => envelope.name === category)?.remaining ?? 0
+                      const isFromSide = transferPickerSide === 'from'
+                      const isDisabled = isFromSide ? remaining <= 0 : category === transferFrom
+                      const active = (isFromSide ? transferFrom : transferTo) === category
+                      const RowIcon = CATEGORY_ICONS[category]
+                      return (
+                        <TouchableOpacity
+                          key={category}
+                          disabled={isDisabled}
+                          style={[styles.transferPickerRow, active && styles.transferPickerRowActive, isDisabled && styles.transferPickerRowDisabled]}
+                          onPress={() => {
+                            Keyboard.dismiss()
+                            if (isFromSide) setTransferFrom(category)
+                            else setTransferTo(category)
+                            setTransferAmount(0)
+                            setTransferPickerSide(null)
+                          }}
+                          activeOpacity={0.82}
+                        >
+                          <View style={styles.transferPickerLeft}>
+                            <View style={[styles.transferPickerIcon, active && styles.transferPickerIconActive]}>
+                              <RowIcon size={16} color={active ? colors.tealDark : colors.muted} strokeWidth={2} />
+                            </View>
+                            <Text style={[styles.transferPickerName, active && styles.transferPickerNameActive, isDisabled && styles.transferPickerNameDisabled]}>{category}</Text>
+                          </View>
+                          <Text style={[styles.transferPickerRemaining, active && styles.transferPickerRemainingActive, isDisabled && styles.transferPickerNameDisabled]}>{money(remaining)}</Text>
+                        </TouchableOpacity>
+                      )
+                    })}
+                  </View>
+                  <TouchableOpacity style={styles.transferPickerCancel} onPress={() => setTransferPickerSide(null)} activeOpacity={0.82}>
+                    <Text style={styles.transferPickerCancelText}>취소</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </Modal>
         <Modal visible={!!reportSnapshot} animationType="slide" transparent onRequestClose={closeReportModal}>
@@ -3466,25 +4140,41 @@ export default function App() {
                           )
                         })
                       })()}
-                    <Text style={styles.sectionTitle}>다음 입금까지 예산</Text>
-                    {state.envelopes.map(envelope => (
-                      <View key={envelope.id} style={styles.envelopeEditRow}>
-                        <Text style={[styles.envelopeStatusName, { flex: 1 }]}>{envelope.name}</Text>
-                        <TextInput
-                          style={[styles.input, styles.moneySmall]}
-                          value={envelope.periodLimit ? envelope.periodLimit.toLocaleString('ko-KR') : ''}
-                          keyboardType="numeric"
-                          onChangeText={amount => updateEnvelope(envelope.id, { periodLimit: numeric(amount) })}
-                          placeholder="0"
-                          placeholderTextColor={colors.subtle}
-                        />
-                      </View>
-                      ))}
                     </>
                   )
                 })()}
               </ScrollView>
             </KeyboardAvoidingView>
+          </View>
+        </Modal>
+        <Modal visible={calendarPicker !== null} animationType="fade" transparent onRequestClose={() => setCalendarPicker(null)}>
+          <View style={styles.modalRoot}>
+            <TouchableOpacity style={styles.modalDismissZone} activeOpacity={1} onPress={() => setCalendarPicker(null)} accessibilityRole="button" accessibilityLabel="선택 닫기" />
+            <View style={styles.pickerSheet}>
+              <Text style={styles.modalTitle}>{calendarPicker === 'year' ? '년도 선택' : '월 선택'}</Text>
+              <ScrollView
+                ref={calendarPickerRef}
+                style={styles.pickerList}
+                contentContainerStyle={styles.pickerListContent}
+              >
+                {calendarPicker === 'year' && Array.from({ length: 31 }, (_, index) => 2000 + index).map(year => {
+                  const active = calendarMonth.getFullYear() === year
+                  return (
+                    <TouchableOpacity key={year} style={[styles.pickerListOption, active && styles.pickerListOptionActive]} onPress={() => { setCalendarMonth(prev => new Date(year, prev.getMonth(), 1)); setCalendarPicker(null) }}>
+                      <Text style={[styles.pickerListText, active && styles.pickerListTextActive]}>{year}년</Text>
+                    </TouchableOpacity>
+                  )
+                })}
+                {calendarPicker === 'month' && Array.from({ length: 12 }, (_, index) => index).map(month => {
+                  const active = calendarMonth.getMonth() === month
+                  return (
+                    <TouchableOpacity key={month} style={[styles.pickerListOption, active && styles.pickerListOptionActive]} onPress={() => { setCalendarMonth(prev => new Date(prev.getFullYear(), month, 1)); setCalendarPicker(null) }}>
+                      <Text style={[styles.pickerListText, active && styles.pickerListTextActive]}>{month + 1}월</Text>
+                    </TouchableOpacity>
+                  )
+                })}
+              </ScrollView>
+            </View>
           </View>
         </Modal>
         {datePickerTarget && (
@@ -3533,7 +4223,7 @@ const styles = StyleSheet.create({
   },
   setupTitle: { marginTop: 10, color: colors.text, fontSize: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   setupCopy: { marginTop: 8, color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
-  setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingBottom: 28 },
+  setupMain: { flex: 1, justifyContent: 'center', gap: 20, paddingTop: 32, paddingBottom: 32 },
   setupIntro: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -3550,7 +4240,7 @@ const styles = StyleSheet.create({
   setupProgressTrack: { flex: 1, height: 6, borderRadius: 999, backgroundColor: colors.border, overflow: 'hidden' },
   setupProgressFill: { height: '100%', borderRadius: 999, backgroundColor: colors.teal },
   setupSingleQuestion: { gap: 12 },
-  setupQuestionTitle: { color: colors.text, fontSize: 28, lineHeight: 36, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
+  setupQuestionTitle: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   setupQuestionCopy: { color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
   setupExampleText: { color: colors.muted, fontSize: 13, lineHeight: 20, fontWeight: '600', fontStyle: 'italic' },
   setupNavRow: { flexDirection: 'row', gap: 10 },
@@ -3585,6 +4275,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  savingHighlight: { borderRadius: 14, backgroundColor: colors.tealLight, borderWidth: 1, borderColor: colors.teal, padding: 16, gap: 4 },
+  savingHighlightLabel: { color: colors.tealDark, fontSize: 13, fontWeight: '800' },
+  savingHighlightValue: { color: colors.tealDark, fontSize: 30, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'] },
   savingRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-end' },
   savingDayField: { width: 86 },
   hero: {
@@ -3612,6 +4305,16 @@ const styles = StyleSheet.create({
   },
   dangerText: { color: colors.danger },
   heroSub: { marginTop: 6, fontSize: 13, color: colors.muted, fontWeight: '700' },
+  weekRuleBox: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.bg,
+    padding: 12,
+    gap: 4,
+  },
+  weekRuleTitle: { color: colors.text, fontSize: 13, fontWeight: '800' },
+  weekRuleCopy: { color: colors.muted, fontSize: 12, lineHeight: 18, fontWeight: '600' },
   incomePrompt: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3703,6 +4406,17 @@ const styles = StyleSheet.create({
     width: `${100 / 6}%`,
     paddingHorizontal: 2,
   },
+  wideChoiceRow: { flexDirection: 'row', gap: 8 },
+  wideChoiceButton: {
+    flex: 1,
+    borderRadius: 12,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.tealLight,
+  },
+  wideChoiceActive: { backgroundColor: colors.text },
+  wideChoiceActiveText: { color: colors.surface, fontWeight: '900' },
   chip: {
     flexDirection: 'row',
     gap: 4,
@@ -3770,10 +4484,200 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   suggestionTitle: { color: colors.muted, fontSize: 12, fontWeight: '700' },
+  suggestionTitleStrong: { color: colors.text, fontSize: 13, fontWeight: '900', fontFamily: 'Pretendard-ExtraBold' },
+  inlineInfoButton: { alignSelf: 'flex-start', paddingVertical: 6 },
+  budgetWarningText: { color: colors.danger, fontSize: 11, lineHeight: 14, fontWeight: '700' },
+  comfortButtonRow: { flexDirection: 'row', gap: 6 },
+  comfortButton: { flex: 1, minHeight: 46, borderWidth: 1, borderColor: colors.border, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, paddingHorizontal: 4, gap: 2 },
+  comfortButtonActive: { backgroundColor: colors.text, borderColor: colors.text },
+  comfortButtonActiveText: { color: colors.surface },
+  comfortBudgetText: { color: colors.muted, fontSize: 10, fontWeight: '800', fontVariant: ['tabular-nums'] },
   suggestionMoney: { color: colors.text, fontSize: 28, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'] },
   suggestionCopy: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '500' },
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  settingsSwitchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingTop: 4 },
   resultEditRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  transferPreviewNextOut: { color: colors.danger },
+  transferPreviewNextIn: { color: colors.tealDark },
+  transferPairRow: { flexDirection: 'row', alignItems: 'stretch', gap: 12, marginTop: 24 },
+  transferPairCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    gap: 6,
+    minHeight: 132,
+  },
+  transferPairCardOut: { borderColor: '#FECACA', backgroundColor: '#FEF2F2' },
+  transferPairCardIn: { borderColor: colors.tealLight, backgroundColor: colors.tealLight },
+  transferPairLabel: { color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 0.3, textTransform: 'uppercase' },
+  transferPairHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  transferPairIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferPairIconOut: { backgroundColor: '#FFE4E6' },
+  transferPairIconIn: { backgroundColor: colors.surface },
+  transferPairName: { flex: 1, color: colors.text, fontSize: 17, fontWeight: '900', fontFamily: 'Pretendard-ExtraBold' },
+  transferPairNowSmall: { fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  transferPairNowSmallOut: { color: colors.danger, opacity: 0.7 },
+  transferPairNowSmallIn: { color: colors.tealDark, opacity: 0.75 },
+  transferPairNextBig: { fontSize: 16, fontWeight: '900', fontFamily: 'Pretendard-Black', fontVariant: ['tabular-nums'], marginTop: 2 },
+  transferSwapButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.tealLight,
+    backgroundColor: colors.tealLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
+  transferAmountBlock: {
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  transferAmountLabel: { color: colors.muted, fontSize: 13, fontWeight: '800' },
+  transferAmountInputRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', gap: 8 },
+  transferAmountInputUnderline: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingHorizontal: 4,
+    paddingBottom: 2,
+  },
+  transferAmountInput: {
+    minWidth: 120,
+    color: colors.text,
+    fontSize: 32,
+    fontWeight: '900',
+    fontFamily: 'Pretendard-Black',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    padding: 0,
+  },
+  transferAmountUnit: { color: colors.text, fontSize: 22, fontWeight: '900', fontFamily: 'Pretendard-ExtraBold', marginBottom: 4 },
+  transferAmountMaxLarge: { color: colors.muted, fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  transferCtaHelper: { color: colors.danger, fontSize: 12, lineHeight: 17, fontWeight: '700', textAlign: 'center' },
+  transferPickerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    zIndex: 5,
+  },
+  transferPickerSheet: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    top: '20%',
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    padding: 20,
+    gap: 14,
+    zIndex: 6,
+  },
+  transferPickerList: { gap: 8 },
+  transferPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+  },
+  transferPickerRowActive: { borderColor: colors.teal, backgroundColor: colors.tealLight },
+  transferPickerRowDisabled: { opacity: 0.4 },
+  transferPickerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  transferPickerIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferPickerIconActive: { backgroundColor: colors.surface },
+  transferPickerName: { color: colors.text, fontSize: 16, fontWeight: '900' },
+  transferPickerNameActive: { color: colors.tealDark },
+  transferPickerNameDisabled: { color: colors.subtle },
+  transferPickerRemaining: { color: colors.muted, fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  transferPickerRemainingActive: { color: colors.tealDark },
+  transferPickerCancel: {
+    minHeight: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bg,
+  },
+  transferPickerCancelText: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  foodQuestionCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 18,
+    padding: 14,
+    gap: 12,
+    shadowColor: colors.text,
+    shadowOpacity: 0.045,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 1,
+  },
+  foodQuestionHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  foodQuestionDot: { width: 7, height: 32, borderRadius: 999, backgroundColor: colors.teal, marginTop: 1 },
+  foodQuestionTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '900', fontFamily: 'Pretendard-ExtraBold' },
+  foodQuestionDescription: { marginTop: 3, color: colors.muted, fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  foodOptionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  foodOption: {
+    flexGrow: 0,
+    flexBasis: '47%',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    minHeight: 56,
+    justifyContent: 'center',
+    backgroundColor: colors.bg,
+    gap: 4,
+  },
+  foodOptionActive: { borderColor: colors.teal, backgroundColor: colors.tealLight },
+  foodOptionText: { color: colors.text, fontSize: 13, lineHeight: 16, fontWeight: '800' },
+  foodOptionTextActive: { color: colors.tealDark, fontWeight: '900' },
+  foodOptionAmount: { alignSelf: 'flex-start', color: colors.muted, fontSize: 11, lineHeight: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  foodOptionAmountActive: { color: colors.tealDark },
+  foodMoneyOption: {
+    flexGrow: 0,
+    flexBasis: '47%',
+    minHeight: 56,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  foodMoneyOptionActive: { borderColor: colors.teal, backgroundColor: colors.tealLight },
+  foodMoneyLabel: { color: colors.tealDark, fontSize: 11, lineHeight: 14, fontWeight: '900' },
+  foodMoneyInput: {
+    marginTop: 3,
+    minHeight: 24,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
   coachQuestionCard: {
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -3786,7 +4690,10 @@ const styles = StyleSheet.create({
   coachQuestion: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
   coachDescription: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '500' },
   coachOptionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  coachOptionColumn: { gap: 8 },
   coachOption: {
+    flexGrow: 0,
+    flexBasis: '47%',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 10,
@@ -3799,6 +4706,27 @@ const styles = StyleSheet.create({
   coachOptionActive: { borderColor: colors.teal, backgroundColor: colors.teal },
   coachOptionText: { color: colors.text, fontSize: 13, fontWeight: '600' },
   coachOptionTextActive: { color: colors.surface, fontWeight: '700' },
+  coachMoneyOption: {
+    flexBasis: '47%',
+    minHeight: 72,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    gap: 4,
+  },
+  coachMoneyInput: {
+    minHeight: 32,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
   envelopeStatusCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3893,12 +4821,30 @@ const styles = StyleSheet.create({
   },
   emptyText: { color: colors.muted, fontSize: 13, lineHeight: 18, fontWeight: '600' },
   calendarHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 10,
     paddingHorizontal: 2,
-    paddingBottom: 16,
+    paddingBottom: 12,
+  },
+  monthTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  monthTitleButton: {
+    minHeight: 44,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  monthTitleText: { color: colors.text, fontSize: 18, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold' },
+  weekSummaryCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    padding: 12,
+    gap: 6,
+    marginBottom: 10,
   },
   title: { marginTop: 8, fontSize: 24, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
   autoSaveNotice: {
@@ -3953,6 +4899,20 @@ const styles = StyleSheet.create({
   legendToday: { width: 12, height: 12, borderRadius: 999, backgroundColor: colors.text },
   legendFixed: { width: 16, height: 8, borderRadius: 999, backgroundColor: colors.warningBg, borderWidth: 1, borderColor: colors.warning },
   legendText: { color: colors.muted, fontSize: 12, fontWeight: '700' },
+  calendarPagerViewport: {
+    flex: 1,
+    overflow: 'hidden',
+    backgroundColor: colors.bg,
+  },
+  calendarPagerTrack: {
+    flexDirection: 'row',
+    height: '100%',
+    gap: CALENDAR_PAGE_GAP,
+    backgroundColor: colors.bg,
+  },
+  calendarPagerPage: {
+    height: '100%',
+  },
   calendarGrid: {
     flex: 1,
     flexDirection: 'row',
@@ -4075,7 +5035,12 @@ const styles = StyleSheet.create({
   envelopeEditRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   setupEnvelopeRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   setupEnvelopeNameField: { flex: 1, gap: 4 },
-  setupEnvelopeMoneyField: { width: 120, gap: 4 },
+  setupEnvelopeNameFixed: { width: 58, gap: 4 },
+  envelopeFixedName: { color: colors.text, fontSize: 14, fontWeight: '800' },
+  setupEnvelopeMoneyField: { flex: 1, gap: 4 },
+  moneyInputRight: { textAlign: 'right', fontVariant: ['tabular-nums'] },
+  monthlyEquivalentBox: { width: 92, gap: 4, alignItems: 'flex-end' },
+  monthlyEquivalentText: { color: colors.muted, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'], textAlign: 'right' },
   incomeSetupCard: {
     gap: 12,
     borderWidth: 1,
@@ -4086,14 +5051,14 @@ const styles = StyleSheet.create({
   },
   incomeTimingRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   incomeCadenceChips: { flex: 1, flexDirection: 'row', gap: 4 },
-  cadenceChipText: { fontSize: 11 },
+  cadenceChipText: { fontSize: 13 },
   incomeCadenceChip: {
     flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 8,
-    paddingHorizontal: 2,
-    paddingVertical: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 36,
@@ -4109,10 +5074,13 @@ const styles = StyleSheet.create({
   setupIncomeNameField: { width: 88, gap: 4 },
   setupNameField: { flex: 1, gap: 4 },
   setupDayField: { width: 58, gap: 4 },
+  setupDateField: { width: 86, gap: 4 },
   setupMoneyField: { width: 112, gap: 4 },
   setupRemoveButton: { minHeight: 44, minWidth: 44, paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
   miniLabel: { color: colors.muted, fontSize: 12, fontWeight: '700' },
-  dayInput: { width: 48, height: 44, paddingVertical: 0, textAlign: 'center' },
+  dayInput: { width: 48, height: 44, paddingHorizontal: 4, paddingVertical: 0, textAlign: 'center', fontSize: 13 },
+  dateMiniButton: { width: 56, height: 44, borderRadius: 10, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
+  dateMiniButtonText: { color: colors.text, fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
   moneySmall: { width: 120 },
   modalRoot: {
     flex: 1,
@@ -4130,10 +5098,41 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    gap: 12,
+    gap: 18,
     maxHeight: '82%',
     zIndex: 1,
   },
+  dateBudgetCard: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.bg,
+    padding: 12,
+    gap: 6,
+  },
+  pickerSheet: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    top: '28%',
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    padding: 18,
+    gap: 14,
+    zIndex: 2,
+  },
+  pickerList: { maxHeight: 260 },
+  pickerListContent: { gap: 6, paddingVertical: 4 },
+  pickerListOption: {
+    minHeight: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bg,
+  },
+  pickerListOptionActive: { backgroundColor: colors.teal },
+  pickerListText: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  pickerListTextActive: { color: colors.surface, fontWeight: '900' },
   modalTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   modalTitle: { marginTop: 6, fontSize: 17, fontWeight: '800', fontFamily: 'Pretendard-ExtraBold', color: colors.text },
 })

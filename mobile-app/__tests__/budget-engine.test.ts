@@ -103,7 +103,11 @@ let sanitizeBudgetState: typeof import('../App').sanitizeBudgetState;
 let nextOccurrence: typeof import('../App').nextOccurrence;
 let periodBounds: typeof import('../App').periodBounds;
 let calculatePlan: typeof import('../App').calculatePlan;
+let allowanceForCalendarDate: typeof import('../App').allowanceForCalendarDate;
+let dayTone: typeof import('../App').dayTone;
+let ensurePastDailySnapshots: typeof import('../App').ensurePastDailySnapshots;
 let calculateEnvelopeStatus: typeof import('../App').calculateEnvelopeStatus;
+let calculateEnvelopeStatusThroughPeriod: typeof import('../App').calculateEnvelopeStatusThroughPeriod;
 let parseIso: typeof import('../App').parseIso;
 let stateAfterAddExpense: typeof import('../App').stateAfterAddExpense;
 let stateAfterDeleteExpense: typeof import('../App').stateAfterDeleteExpense;
@@ -118,7 +122,11 @@ beforeAll(async () => {
     nextOccurrence,
     periodBounds,
     calculatePlan,
+    allowanceForCalendarDate,
+    dayTone,
+    ensurePastDailySnapshots,
     calculateEnvelopeStatus,
+    calculateEnvelopeStatusThroughPeriod,
     parseIso,
     stateAfterAddExpense,
     stateAfterDeleteExpense,
@@ -264,6 +272,55 @@ describe('live wallet expense updates', () => {
 
     expect(next.currentBalance).toBe(50000);
     expect(next.expenses[0]).toMatchObject({ amount: 50000, memo: '저녁', category: '문화' });
+  });
+});
+
+
+describe('daily budget snapshots', () => {
+  it('freezes past date allowance and tone after the day passes', () => {
+    const state = makeState({
+      setupComplete: true,
+      currentBalance: 600000,
+      currentPeriodStart: '2026-05-20',
+      lifestyleType: 'balanced',
+      expenses: [{ id: 'expense-1', date: '2026-05-20', amount: 70000, memo: '', category: '식비', createdAt: '2026-05-20T00:00:00.000Z' } as never],
+    });
+    const frozen = ensurePastDailySnapshots(state, parseIso('2026-05-21'));
+    const snapshot = frozen.dailySnapshots['2026-05-20'];
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot.spent).toBe(70000);
+
+    const changedLifestyle = sanitizeBudgetState({
+      ...frozen,
+      lifestyleType: 'weekendHeavy',
+      currentBalance: 100000,
+    } as never);
+    const plan = calculatePlan(changedLifestyle, parseIso('2026-05-21'));
+    const allowance = allowanceForCalendarDate(changedLifestyle, parseIso('2026-05-20'), plan, parseIso('2026-05-21'));
+
+    expect(allowance).toBe(snapshot.allowance);
+    expect(dayTone(changedLifestyle, '2026-05-20', 70000, allowance, parseIso('2026-05-21'))).toBe(snapshot.tone);
+  });
+
+  it('keeps frozen allowance but refreshes spent and tone if a past expense changes', () => {
+    const state = makeState({
+      setupComplete: true,
+      currentBalance: 600000,
+      currentPeriodStart: '2026-05-20',
+      expenses: [{ id: 'expense-1', date: '2026-05-20', amount: 10000, memo: '', category: '식비', createdAt: '2026-05-20T00:00:00.000Z' } as never],
+    });
+    const frozen = ensurePastDailySnapshots(state, parseIso('2026-05-21'));
+    const allowance = frozen.dailySnapshots['2026-05-20'].allowance;
+    const edited = sanitizeBudgetState({
+      ...frozen,
+      expenses: [{ id: 'expense-1', date: '2026-05-20', amount: allowance + 1, memo: '', category: '식비', createdAt: '2026-05-20T00:00:00.000Z' } as never],
+    } as never);
+    const refreshed = ensurePastDailySnapshots(edited, parseIso('2026-05-21'));
+
+    expect(refreshed.dailySnapshots['2026-05-20'].allowance).toBe(allowance);
+    expect(refreshed.dailySnapshots['2026-05-20'].spent).toBe(allowance + 1);
+    expect(refreshed.dailySnapshots['2026-05-20'].tone).toBe('over');
   });
 });
 
@@ -421,18 +478,43 @@ describe('period budget engine', () => {
     expect(plan.savingReserved).toBe(0);
   });
 
-  it('derives savingReserved from the live breakdown when saving is on', () => {
+  it('uses the fixed saving goal when saving is on', () => {
     const state = makeState({
       currentBalance: 800000,
       currentPeriodStart: '2026-05-20',
       incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-05-25', amount: 1000000 } as never],
       fixedItems: [{ id: 'fixed-1', name: '통신비', day: 23, amount: 50000 }],
       savingEnabled: true,
+      savingGoal: 100000,
     });
     const plan = calculatePlan(state, parseIso('2026-05-20'));
 
-    expect(plan.savingReserved).toBeGreaterThan(0);
-    expect(plan.dailyUnit).toBeLessThan(150000);
+    expect(plan.savingReserved).toBe(100000);
+    expect(plan.dailyUnit).toBe(130000);
+  });
+
+  it('does not lower savingReserved after spending', () => {
+    const state = makeState({
+      currentBalance: 800000,
+      currentPeriodStart: '2026-05-20',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-05-25', amount: 1000000 } as never],
+      fixedItems: [],
+      savingEnabled: true,
+      savingGoal: 200000,
+    });
+    const spent = stateAfterAddExpense(state, {
+      id: 'expense-1',
+      date: '2026-06-01',
+      amount: 500000,
+      memo: '',
+      category: '식비',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    });
+    const before = calculatePlan(state, parseIso('2026-05-20'));
+    const after = calculatePlan(spent, parseIso('2026-05-20'));
+
+    expect(after.savingReserved).toBe(200000);
+    expect(after.dailyUnit).toBeLessThan(before.dailyUnit);
   });
 
   it('adds today spending back to the pool then subtracts it from today remaining', () => {
@@ -446,6 +528,47 @@ describe('period budget engine', () => {
 
     expect(plan.todayAllowance).toBe(160000);
     expect(plan.todayRemaining).toBe(130000);
+  });
+
+
+  it('redistributes today underspending into the rest of this week first', () => {
+    const state = makeState({
+      currentBalance: 700000,
+      currentPeriodStart: '2026-05-18',
+      lifestyleType: 'balanced',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-06-17', amount: 1000000 } as never],
+      expenses: [],
+    });
+    const today = parseIso('2026-05-18');
+    const plan = calculatePlan(state, today);
+    const tomorrowAllowance = allowanceForCalendarDate(state, parseIso('2026-05-19'), plan, today);
+
+    expect(tomorrowAllowance).toBeGreaterThan(plan.todayAllowance);
+  });
+
+  it('redistributes today overspending into the rest of this week dramatically', () => {
+    const noSpend = makeState({
+      currentBalance: 700000,
+      currentPeriodStart: '2026-05-18',
+      lifestyleType: 'balanced',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-06-17', amount: 1000000 } as never],
+      expenses: [],
+    });
+    const overspent = makeState({
+      currentBalance: 400000,
+      currentPeriodStart: '2026-05-18',
+      lifestyleType: 'balanced',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-06-17', amount: 1000000 } as never],
+      expenses: [{ id: 'expense-1', date: '2026-05-18', amount: 300000, memo: '', category: '식비', createdAt: '2026-05-18T00:00:00.000Z' } as never],
+    });
+    const today = parseIso('2026-05-18');
+    const noSpendPlan = calculatePlan(noSpend, today);
+    const overspentPlan = calculatePlan(overspent, today);
+    const noSpendTomorrow = allowanceForCalendarDate(noSpend, parseIso('2026-05-19'), noSpendPlan, today);
+    const overspentTomorrow = allowanceForCalendarDate(overspent, parseIso('2026-05-19'), overspentPlan, today);
+
+    expect(overspentPlan.todayRemaining).toBeLessThan(0);
+    expect(overspentTomorrow).toBeLessThan(noSpendTomorrow / 2);
   });
 
   it('calculates open-ended runway from recent spending', () => {
@@ -478,4 +601,32 @@ describe('period budget engine', () => {
     });
     expect(statuses.find(envelope => envelope.name === '문화')?.spent).toBe(30000);
   });
+
+  it('counts future-dated expenses in the current period envelope status', () => {
+    const state = makeState({
+      currentPeriodStart: '2026-05-25',
+      incomes: [{ name: '월급', cadence: 'monthly', anchorDate: '2026-06-25', amount: 1000000 } as never],
+      envelopes: [
+        { id: 'food', name: '식비', periodLimit: 300000 },
+        { id: 'life', name: '생활', periodLimit: 200000 },
+      ] as never,
+      currentPeriodPlan: [
+        { category: '식비', limit: 300000 },
+        { category: '생활', limit: 200000 },
+      ] as never,
+      expenses: [
+        { id: 'future-food', date: '2026-06-01', amount: 250000, memo: '', category: '식비', createdAt: '2026-05-29T00:00:00.000Z' },
+      ] as never,
+    });
+
+    const todayOnly = calculateEnvelopeStatus(state, parseIso('2026-05-29'));
+    const throughPeriod = calculateEnvelopeStatusThroughPeriod(state, parseIso('2026-05-29'));
+
+    expect(todayOnly.find(envelope => envelope.name === '식비')?.remaining).toBe(300000);
+    expect(throughPeriod.find(envelope => envelope.name === '식비')).toMatchObject({
+      spent: 250000,
+      remaining: 50000,
+    });
+  });
+
 });

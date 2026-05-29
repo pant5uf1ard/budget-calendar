@@ -119,22 +119,22 @@ describe('direct onboarding envelope calculation', () => {
   it('uses default direct budgets instead of weighted ratios', () => {
     const budgets = monthlyEnvelopeBudgets(makeState(), initialCoachProfile);
 
-    expect(budgets.식비).toBe(230000);
-    expect(budgets.문화).toBe(155000);
-    expect(budgets.쇼핑).toBe(100000);
+    expect(budgets.식비).toBe(120000);
+    expect(budgets.문화).toBe(0);
+    expect(budgets.쇼핑).toBe(0);
     expect(budgets.생활).toBe(70000);
     expect(budgets.교통).toBe(30000);
-    expect(budgets.기타).toBe(0); // clamped at 0 when leftover would be negative
+    expect(budgets.기타).toBe(340000);
   });
 
-  it('maps provided lunch and home dinner to 80000 food budget', () => {
+  it('maps provided lunch and home dinner to 120000 food budget', () => {
     const budgets = monthlyEnvelopeBudgets(makeState(), {
       ...initialCoachProfile,
       lunch: 'provided',
       dinner: 'home',
     });
 
-    expect(budgets.식비).toBe(80000);
+    expect(budgets.식비).toBe(120000);
   });
 
   it('adds social and content into culture budget', () => {
@@ -205,8 +205,16 @@ describe('onboarding migration', () => {
     });
 
     expect(state.coachProfile).toEqual({
+      breakfast: 'none',
       lunch: 'buy',
       dinner: 'buy',
+      snack: 'none',
+      lateNight: 'none',
+      breakfastMonthly: 0,
+      lunchMonthly: 0,
+      dinnerMonthly: 0,
+      snackMonthly: 0,
+      lateNightMonthly: 0,
       socialFrequency: 10,
       socialPerVisit: 25000,
       shoppingMonthly: 350000,
@@ -220,7 +228,7 @@ describe('onboarding migration', () => {
 
     expect(state.setupComplete).toBe(true);
     expect(state.datePoolMonthly).toBe(0);
-    expect(state.eventReserveMonthly).toBe(40000);
+    expect(state.eventReserveMonthly).toBe(0);
     expect(state.housing).toBe('solo');
   });
 });
